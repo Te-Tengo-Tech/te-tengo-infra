@@ -1,0 +1,13 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+*.auto.tfvars
+secretos.tfvars
+# Ansible
+*.retry
+# Entorno
+.env
+.DS_Store
