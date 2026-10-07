@@ -1,15 +1,15 @@
 # te-tengo-infra
 
-Infraestructura de **Te Tengo**: crear los recursos en AWS, configurar el servidor y desplegar el backend.
+Infrastructure for **Te Tengo**: create the AWS resources, configure the server and deploy the backend.
 
-| Carpeta | Herramienta | Qué tendrá |
+| Folder | Tool | Will contain |
 |---|---|---|
-| `terraform/` | Terraform | VPC, subredes, Security Groups, EC2, RDS for PostgreSQL, bucket S3 de clips con cifrado, VPC Endpoint de S3, SNS e IAM con permisos mínimos |
-| `ansible/` | Ansible | Instalar Docker, Nginx con certificado TLS y desplegar `compose/` en la EC2 |
-| `compose/` | Docker Compose | Producción: proxy inverso y `te-tengo-general-api`. Con el procesamiento en la vivienda (ADR 0007 del agente) **no hay contenedor de detección**. |
+| `terraform/` | Terraform | VPC, subnets, security groups, EC2, RDS for PostgreSQL, encrypted S3 clip bucket, S3 VPC endpoint, SNS and least-privilege IAM |
+| `ansible/` | Ansible | Install Docker and Nginx with a TLS certificate, and deploy `compose/` on the EC2 instance |
+| `compose/` | Docker Compose | Production reverse proxy and `te-tengo-general-api`. With video processed on the household PC (ADR 0007 in the desktop agent repository), there is **no detection container** |
 
-**Estado:** estructura inicial; pendiente.
+**Status:** initial structure; not implemented yet.
 
-**Referencia:** la arquitectura física está en `04-arquitectura/` de `Te-Tengo-Tech/docs`. Debe actualizarse con el procesamiento en la vivienda.
+**Reference:** the physical architecture lives in `04-arquitectura/` of `Te-Tengo-Tech/docs` (Spanish). It must be updated for processing on the household PC.
 
-**Nunca se suben credenciales ni archivos de estado** (`*.tfstate`, `.terraform/`, `*.tfvars` con secretos); ver `.gitignore`.
+**Never commit credentials or state files** (`*.tfstate`, `.terraform/`, `*.tfvars` with secrets); see `.gitignore`.

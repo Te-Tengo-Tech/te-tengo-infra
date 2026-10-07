@@ -8,6 +8,6 @@ crash.log
 secretos.tfvars
 # Ansible
 *.retry
-# Entorno
+# Environment
 .env
 .DS_Store
