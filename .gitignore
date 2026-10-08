@@ -18,6 +18,8 @@ override.tf.json
 .terraformrc
 terraform.rc
 .tflint.d/
+# Modules do not pin providers; only root configurations commit a lock file
+modules/**/.terraform.lock.hcl
 # Ansible
 *.retry
 # Environment
