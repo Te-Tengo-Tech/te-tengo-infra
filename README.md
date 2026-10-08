@@ -1,17 +1,18 @@
 # te-tengo-infra
 
-Infrastructure for **Te Tengo**: create the VM, configure the server and deploy the backend. Production must cost (almost) nothing, so **only the VM comes from a cloud provider**: an **Oracle Cloud (OCI) Always Free** Ampere A1 VM (1 OCPU / 6 GB, half of the tenancy's allowance). Clips, database dumps and the Terraform state live in **Cloudflare R2**, DNS records are created by hand at the registrar (**Namify**), the landing page is on Cloudflare Pages, push goes through Firebase Cloud Messaging and e-mail through a generic SMTP relay.
+Infrastructure for **Te Tengo**: create the VM, configure the server and deploy the backend. Production must cost as little as possible, so **only the VM comes from a cloud provider**: one **Microsoft Azure** VM (`Standard_B2ats_v2`, 2 vCPU / 1 GiB, in `chilecentral`) on the **Azure for Students** subscription (US$ 100 credit; the size is in the offer's 750 free hours a month, the static IP and the disk are paid from the credit, ≈ US$ 7/month plus disk operations: [docs/terraform.md](docs/terraform.md#cost-what-the-credit-pays)). Clips, database dumps and the Terraform state live in **Cloudflare R2**, DNS records are created by hand at the registrar (**Namify**), the landing page is on Cloudflare Pages, push goes through Firebase Cloud Messaging and e-mail through a generic SMTP relay.
 
 | Folder | Tool | Contains |
 |---|---|---|
-| `envs/oci/`, `modules/te-tengo-oci/` | Terraform | **Active.** One `VM.Standard.A1.Flex` (Ubuntu 24.04 aarch64) in a minimal VCN; firewall open on 80, 443 (TCP+UDP) and 8322, SSH only from `admin_cidrs`; renders the Ansible inventory; tested offline with a mocked provider ([docs/terraform.md](docs/terraform.md)) |
+| `envs/azure/`, `modules/te-tengo-azure/` | Terraform | **Active.** One `Standard_B2ats_v2` VM (Ubuntu 24.04 x64, 30 GB Standard SSD, Trusted Launch) with a static Standard public IP in a minimal virtual network; NSG open on 80, 443 (TCP+UDP) and 8322, SSH (key only) from `admin_cidrs`; renders the Ansible inventory; tested offline with a mocked provider ([docs/terraform.md](docs/terraform.md)) |
+| `envs/oci/`, `modules/te-tengo-oci/` | Terraform | **Inactive OCI alternative** (no Ampere A1 capacity was available): one `VM.Standard.A1.Flex` on Always Free; validated and tested offline, never applied |
 | `envs/mvp/`, `modules/te-tengo/`, `bootstrap/` | Terraform | **Inactive AWS alternative**, never applied: the same host on EC2 `t4g.small`, "VM only" by default (S3, SES, SNS and Route53 optional); verified against the Floci emulator through `envs/local/` |
-| `ansible/` | Ansible | Configure the host over SSH (OCI) or SSH over SSM (AWS): updates, swap, host firewall, Docker; deploy `compose/`; daily PostgreSQL backups to R2 ([docs/ansible.md](docs/ansible.md)) |
+| `ansible/` | Ansible | Configure the host over SSH (Azure, OCI) or SSH over SSM (AWS): updates, swap, the OCI image firewall (OCI only), Docker; deploy `compose/` with the memory profile of the VM (`tiny` for 1 GiB); daily PostgreSQL backups to R2 ([docs/ansible.md](docs/ansible.md)) |
 | `compose/` | Docker Compose | Caddy (TLS), `te-tengo-general-api`, PostgreSQL 18 and MediaMTX (live view). With video processed on the household PC (ADR 0007 in the desktop agent repository), there is **no detection container** |
-| `test/` | Docker | Local stand-in for the VM (Ubuntu 24.04 + systemd + SSH) and Floci as the S3-compatible store: `make test-all` deploys and smoke-tests the stack without any cloud account |
+| `test/` | Docker | Local stand-in for the VM (Ubuntu 24.04 + systemd + SSH, capped at 1 GiB like the Azure VM) and Floci as the S3-compatible store: `make test-all` deploys, smoke-tests and measures the stack without any cloud account |
 
 **Deploying:** [docs/deploy.md](docs/deploy.md) (runbook, secrets, rollback). **Contract between Terraform and Ansible:** [docs/interface-terraform-ansible.md](docs/interface-terraform-ansible.md).
 
-**Reference:** the physical architecture lives in `04-arquitectura/` of `Te-Tengo-Tech/docs` (Spanish). It must be updated for processing on the household PC and for OCI + R2.
+**Reference:** the physical architecture lives in `04-arquitectura/` of `Te-Tengo-Tech/docs` (Spanish). It must be updated for processing on the household PC and for Azure + R2.
 
-**Never commit credentials or state files** (`*.tfstate`, `.terraform/`, `*.tfvars`, `backend.hcl`, `~/.oci/config`, the Ansible vault unencrypted); see `.gitignore`. Applies are run by an operator: CI never plans or applies against a real cloud.
+**Never commit credentials or state files** (`*.tfstate`, `.terraform/`, `*.tfvars`, `backend.hcl`, `~/.azure`, `~/.oci/config`, the Ansible vault unencrypted); see `.gitignore`. Applies are run by an operator: CI never plans or applies against a real cloud.

@@ -1,29 +1,182 @@
 # Terraform
 
-The Te Tengo backend runs on **one VM** with PostgreSQL, the API, Caddy and MediaMTX in Docker Compose (set up by Ansible, see [interface-terraform-ansible.md](interface-terraform-ansible.md)). Production must cost (almost) nothing, so **only the VM comes from a cloud provider**:
+The Te Tengo backend runs on **one VM** with PostgreSQL, the API, Caddy and MediaMTX in Docker Compose (set up by Ansible, see [interface-terraform-ansible.md](interface-terraform-ansible.md)). Production must cost as little as possible, so **only the VM comes from a cloud provider**:
 
 | Piece | Where | Managed by |
 |---|---|---|
-| VM, network, firewall | **Oracle Cloud Infrastructure (OCI) Always Free**: one Ampere A1 VM (`envs/oci`, **active**) | Terraform |
+| VM, network, firewall, public IP | **Microsoft Azure**, Azure for Students subscription (US$ 100 credit): one `Standard_B2ats_v2` VM (`envs/azure`, **active**) | Terraform |
 | Clips, database dumps, Terraform state | **Cloudflare R2** (S3-compatible): three private buckets | By hand (below) |
 | DNS | The registrar **Namify**: `api.tetengo.reqsai.tech` A record → VM IP | By hand (below) |
 | Landing page | Cloudflare Pages | Outside this repository |
 | Push | Firebase Cloud Messaging | Ansible (vault key) |
 | E-mail | Generic SMTP relay (API `TT_CORREO_PROVEEDOR=smtp`) | Ansible ([ansible.md](ansible.md)) |
 
-> **Status:** `envs/oci` is validated, linted and unit-tested with a mocked provider (`make tf-test`); it has **not been planned or applied against a real tenancy** (no account yet). `envs/mvp` (AWS) is an **inactive alternative**, never applied, verified only against the [Floci](https://github.com/floci-io/floci) emulator.
+> **Status:** `envs/azure` is validated, linted and unit-tested with a mocked provider (`make tf-test`); it has **not been planned or applied** against the subscription yet. **Inactive alternatives**, kept in the repository and in CI: `envs/oci` (Oracle Cloud Always Free; dropped because no Ampere A1 capacity was available) and `envs/mvp` (AWS, verified only against the [Floci](https://github.com/floci-io/floci) emulator).
 
 ## Layout
 | Path | What it is |
 |---|---|
-| `modules/te-tengo-oci/` | OCI resources of the active environment (below). `tests/module.tftest.hcl`: offline `terraform test` with `mock_provider "oci"` |
-| `envs/oci/` | **Active.** Provider `oracle/oci` `~> 9.8` (lock file: 9.9.0); credentials from `~/.oci/config`. State in Cloudflare R2 through the S3 backend (`backend.hcl.example`) or local (`backend_override.tf`); `terraform.tfvars.example` |
+| `modules/te-tengo-azure/` | Azure resources of the active environment (below). `tests/module.tftest.hcl`: offline `terraform test` with `mock_provider "azurerm"` |
+| `envs/azure/` | **Active.** Provider `hashicorp/azurerm` `~> 4.81` (lock file: 4.81.0); credentials from the Azure CLI (`az login`). State in Cloudflare R2 through the S3 backend (`backend.hcl.example`, key `envs/azure/terraform.tfstate`) or local (`backend_override.tf`); `terraform.tfvars.example` |
+| `modules/te-tengo-oci/`, `envs/oci/` | **Inactive OCI alternative**: one Ampere A1 VM on Always Free ([below](#oci-alternative-inactive)) |
 | `modules/te-tengo/`, `envs/mvp/` | **Inactive AWS alternative**, reduced by default to "VM only" (EC2, security group, IAM for SSM, GitHub OIDC deploy role); S3, SES, SNS and Route53 are optional ([below](#aws-alternative-inactive)) |
 | `envs/local/` | `modules/te-tengo` pointed at Floci, with every optional path switched on |
 | `bootstrap/` | S3 state bucket for `envs/mvp` only (AWS) |
-| `.tflint.hcl`, `.checkov.yaml` | Linter and security-scanner settings. Accepted checkov findings are skipped next to the resource with the reason |
+| `.tflint.hcl`, `.checkov.yaml` | Linter (terraform, aws and azurerm rulesets) and security-scanner settings. Accepted checkov findings are skipped next to the resource with the reason |
 
-## Resources (`modules/te-tengo-oci`)
+`hashicorp/azurerm` 5.x exists (5.9.0 on 2026-10-08); the environment pins the 4.x line on purpose (newest 4.x: 4.81.0). Moving to 5.x is a separate change with its own upgrade guide.
+
+## Resources (`modules/te-tengo-azure`)
+Eight resources, all in one resource group (nine with the optional budget). No Bastion, NAT gateway, load balancer, Key Vault or storage account.
+
+| Area | Resources | Notes |
+|---|---|---|
+| Group | Resource group `te-tengo-prod-rg` in `location` | Deleting it deletes everything below |
+| Network | Virtual network `10.50.0.0/16`, one `/24` subnet | No NAT gateway, no private subnet (the database is on the host) |
+| Firewall | Network security group on the subnet, **stateful**, inbound allow rules only: 80/TCP, 443/TCP, 443/UDP (HTTP/3) and **8322/TCP** (MediaMTX RTSPS, `live_view_publish_cidrs`) from anywhere; **22/TCP from `admin_cidrs`**, which defaults to `0.0.0.0/0` (below). Everything else inbound hits the NSG's built-in `DenyAllInBound`; outbound keeps the defaults (Internet allowed) | Every public port of `compose/compose.yaml` and the Caddyfile, nothing else. Canonical's Azure image has no host firewall policy to open, so Ansible's OCI firewall tasks are skipped ([ansible.md](ansible.md)) |
+| Address | **Standard SKU, static** public IPv4 on the NIC | Kept across stop/deallocate; it changes only if the public IP resource is replaced or destroyed |
+| Host | `azurerm_linux_virtual_machine`, `vm_size` **`Standard_B2ats_v2`** (2 vCPU AMD, 1 GiB) by default; image **Canonical `ubuntu-24_04-lts`**, SKU `server` (x64) or `server-arm64` when the size is Arm (a `p` in its feature letters, e.g. `Standard_B2pts_v2`), version `latest` at creation; admin user `ubuntu` with `ssh_public_key`, **password authentication disabled**; **Trusted Launch** (Secure Boot + vTPM); boot diagnostics in a **managed** storage account; cloud-init only installs `python3` (later changes ignored so they never replace the host) | OS disk: **Standard SSD (`StandardSSD_LRS`) 30 GB** by default, encrypted at rest by the platform; `os_disk_storage_account_type = "Premium_LRS"` + `os_disk_size_gb = 64` gives a **P6**. A precondition rejects Premium on a size without premium storage (no `s` in the feature letters) |
+| Memory profile | Output `memory_profile` from the size's memory: `tiny` (1 GiB: B2ats_v2, B2ts_v2, B2pts_v2, B1s), `small` (2 GiB), `medium` (4 GiB: **B2als_v2**, B2ls_v2), `large` (≥ 6 GiB); an unknown size needs `memory_profile` | [ansible.md](ansible.md#memory-profiles) |
+| Name | `app_hostname` (e.g. `api.tetengo.reqsai.tech`, A record by hand at Namify), else `<ip-with-dashes>.sslip.io` | Output `dns_record` prints the record to create |
+| Budget (optional) | `azurerm_consumption_budget_subscription`, US$ 5/month, e-mails at 80 % and 100 % of the actual cost, only when `budget_alert_email` is set | **Off by default**: Microsoft lists Azure for Students as an offer Cost Management does not support ([below](#cost-alerts)) |
+| Tags | `Project`, `Environment`, `ManagedBy`, `Repository` on every taggable resource | |
+
+Outputs: `public_ip`, `ssh_command`, `app_url`, `dns_record`, `live_view_*`, `memory_profile`, `instance_architecture`, `image`, `vm_size`, `location`, `resource_group_name`, `instance_id`, `budget_id` and `ansible_inventory` (same contract as the OCI module, `ansible_connection: ssh`, `cloud_provider: azure`; [interface-terraform-ansible.md](interface-terraform-ansible.md)).
+
+The provider registers only `Microsoft.Compute` and `Microsoft.Network` (plus `Microsoft.Consumption` with a budget) instead of its default "core" set; on the subscription all of them were already registered on 2026-10-08.
+
+### SSH open to anywhere (`admin_cidrs`)
+The operator connects through Cloudflare WARP and the deploy workflow runs on GitHub-hosted runners: neither has a fixed source address, so `admin_cidrs` defaults to `["0.0.0.0/0"]`. The protection is the authentication: the VM is created with `disable_password_authentication = true` and only the `ssh_public_key` (plus, after the first deploy, the restricted deploy key) can log in. Narrow `admin_cidrs` when the sources become known (a self-hosted runner, a fixed office IP); checkov's CKV_AZURE_10 is skipped in the module with this reason.
+
+## The subscription (read on 2026-10-08)
+Facts read from the Azure for Students subscription itself; re-check them before an apply, they can change:
+
+| What | Value | How to check |
+|---|---|---|
+| Allowed regions | An Azure Policy assignment, **"Allowed resource deployment regions"**, only accepts `canadacentral`, `chilecentral`, `northcentralus`, `westus` and `mexicocentral`. `envs/azure` validates `location` against this list; **`chilecentral`** (Santiago) is the default, the closest to Peru | Portal → *Policy* → *Assignments* → that assignment → *Parameters*. A deployment elsewhere fails with `RequestDisallowedByAzure` |
+| Sizes in `chilecentral` | Unrestricted small sizes: `Standard_B2ats_v2` (2 vCPU, 1 GiB, x64), `Standard_B2ts_v2` (1 GiB), `Standard_B2als_v2` (2 vCPU, 4 GiB), `Standard_B2ls_v2` (4 GiB). **No Arm sizes and no `B1s`/`B1ms`** there; in `mexicocentral`, `B2ats_v2` and `B2als_v2` return `NotAvailableForSubscription` | `az vm list-skus --location chilecentral --size Standard_B2 --all --output table` (the *Restrictions* column) |
+| Quotas in `chilecentral` | Total regional vCPUs **6**, Basv2 family **10** vCPUs, public IP addresses **3** | `az vm list-usage --location chilecentral --output table`, `az network list-usages --location chilecentral --output table` |
+| Resource providers | `Microsoft.Compute`, `Microsoft.Network`, `Microsoft.Consumption`, `Microsoft.CostManagement` registered | `az provider show --namespace Microsoft.Compute --query registrationState` |
+
+So the default host is `Standard_B2ats_v2` (x64, image `server`), and the documented upgrade path is **`Standard_B2als_v2`** (2 vCPU, 4 GiB → memory profile `medium`), not `B1ms`. Arm stays supported by the module but is not the default.
+
+## Cost: what the credit pays
+Prices from the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices) (`api-version=2023-01-01-preview`, `priceType eq 'Consumption'`), read on **2026-10-08**, in USD, **list prices before the student offer**; a month is 730 hours. Only the numbers below are sourced; nothing else is assumed.
+
+| Item | Unit price (`chilecentral`) | Source (API filter) | USD/month |
+|---|---|---|---|
+| VM `Standard_B2ats_v2` Linux | $0.0132/hour | `serviceName eq 'Virtual Machines' and armSkuName eq 'Standard_B2ats_v2'`, product "Virtual Machines Basv2 Series", meter "B2ats v2" | 9.64 list; **0 within the free hours** (below) |
+| Standard static public IPv4 | $0.005/hour | `serviceName eq 'Virtual Network'`, product "IP Addresses", meter "Standard IPv4 Static Public IP" (same price in every region queried) | **3.65** |
+| OS disk, Standard SSD 30 GB (billed as **E4**, 32 GiB) | $3.36/month + $0.0028 per 10,000 operations | `serviceName eq 'Storage' and skuName eq 'E4 LRS'`, product "Standard SSD Managed Disks" | **3.36** + operations (not estimated: they depend on PostgreSQL and Docker I/O) |
+| Optional: OS disk Premium SSD 64 GB (**P6**) | $13.024089/month, no operation charge | `skuName eq 'P6 LRS'`, product "Premium SSD Managed Disks" | 13.02 |
+| Outbound data (Microsoft network routing, the default) | First 100 GB/month $0, then $0.087/GB | `serviceName eq 'Bandwidth'`, product "Rtn Preference: MGN", meter "Standard Data Transfer Out" | **0** (live view and API traffic stay far below 100 GB) |
+| Virtual network, subnet, NSG, NIC | No charge | "Virtual Network in Azure is free of charge" ([Virtual Network pricing](https://azure.microsoft.com/en-us/pricing/details/virtual-network/)); the API has no meter for NSGs or NICs in `chilecentral` | 0 |
+| Boot diagnostics (managed storage) | Not billed | "the boot diagnostics data blobs … stored in the managed storage account are not currently billed" ([Azure boot diagnostics](https://learn.microsoft.com/en-us/azure/virtual-machines/boot-diagnostics)) | 0 |
+| Trusted Launch | No charge | "Trusted Launch doesn't increase existing VM pricing costs" ([Trusted Launch](https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch)) | 0 |
+| **Total, defaults** | | | **≈ 7.01 + disk operations** (VM inside the free hours); 16.65 + operations if the VM hours were billed |
+
+**The student offer.** The [Azure for Students page](https://azure.microsoft.com/en-us/free/students) offers "$100 credit … within 12 months", "no credit card required", and, among the free monthly amounts for 12 months, Linux VMs: "750 hours each of B1s, B2pts v2 (Arm-based), and B2ats v2 (AMD-based) burstable VMs". 750 hours cover one VM running all month (a 31-day month has 744 hours). The page does not list managed disks or public IPs, so the disk and the IP are paid from the credit. Microsoft's [disabled-subscription page](https://learn.microsoft.com/en-us/azure/cost-management-billing/manage/azurestudents-subscription-disabled): "Any usage beyond the free services and quantities is deducted from your credit. Once your credit runs out, Azure disables your services and subscription"; the remaining credit and its use per service are on the [Azure Sponsorships balance page](https://www.microsoftazuresponsorships.com/balance). With the defaults, ≈ US$ 7/month plus disk operations is ≈ US$ 84 over 12 months: inside the credit, with little margin. Check the balance page after the first week, and again after the first month, to confirm that the VM hours are not charged.
+
+**Upgrade and disk options, same source and date:**
+
+| Change | Unit price (`chilecentral`) | USD/month | Effect on the credit |
+|---|---|---|---|
+| `vm_size = "Standard_B2als_v2"` (4 GiB, `medium`) | $0.0526/hour, not in the free hours | 38.40 | With the IP and the E4 disk ≈ 45.41/month: the credit lasts about two months |
+| `Premium_LRS` 64 GB (P6) instead of the E4 | $13.024089/month | +9.66 over the E4 | The [free services list](https://azure.microsoft.com/en-us/pricing/free-services) of the Azure free account mentions 64 GB P6 disks; the Azure for Students page does not, so this is treated as paid |
+
+Prices in the other allowed regions (same API, same date): `Standard_B2ats_v2` $0.0105/h in `canadacentral`, $0.0094/h in `northcentralus`, $0.0112/h in `westus`; `Standard_B2als_v2` $0.0418, $0.0376 and $0.0446/h. Re-query before choosing another region:
+```bash
+curl -sG https://prices.azure.com/api/retail/prices --data-urlencode "api-version=2023-01-01-preview" \
+  --data-urlencode "\$filter=serviceName eq 'Virtual Machines' and armRegionName eq 'chilecentral' and armSkuName eq 'Standard_B2ats_v2' and priceType eq 'Consumption'" \
+  | jq -r '.Items[] | [.productName, .meterName, .retailPrice, .unitOfMeasure] | @tsv'
+```
+
+**Stopping is not free.** Deallocating the VM (`az vm deallocate`) stops the compute meter only; the static public IP and the disk keep their monthly price until they are deleted. To stop paying, destroy the environment (teardown below).
+
+### Cost alerts
+[Understand Cost Management data](https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/understand-cost-mgt-data) lists "Azure for Students" (MS-AZR-0170P) among the offers that **aren't supported** by Cost Management, so the module does not create a budget unless `budget_alert_email` is set, and an apply with it may be rejected on this subscription. The working control here is the credit itself (services are disabled when it runs out) and the balance page above. On a pay-as-you-go subscription, set `budget_alert_email` (and `budget_amount`, default 5) to get e-mails at 80 % and 100 % of the actual monthly cost.
+
+## Runbook: first apply on Azure (operator)
+Prerequisites: Terraform ≥ 1.10, the Azure CLI (`az`), Ansible core ≥ 2.18, an OpenSSH key pair (ed25519 or RSA ≥ 2048), a Cloudflare account and access to the Namify DNS panel. Run everything from your own terminal: `azure-apply` refuses to run where `CI` or `GITHUB_ACTIONS` is set.
+
+1. **Sign in and find the subscription id.**
+   ```bash
+   az login                                   # browser sign-in with the Azure for Students account
+   az account show --query "{name:name, id:id, state:state, user:user.name}" -o table
+   az account set --subscription <id>         # only if you have more than one subscription
+   ```
+   Terraform's `azurerm` provider uses this CLI login; nothing secret is written to the repository. The `id` column is `subscription_id`.
+2. **Check region, size and quota** (see [The subscription](#the-subscription-read-on-2026-10-08)): the region must be in the policy's list, `Standard_B2ats_v2` must have no restriction there, and there must be 2 free vCPUs and one free public IP.
+   ```bash
+   az vm list-skus --location chilecentral --size Standard_B2 --all --output table
+   az vm list-usage --location chilecentral --output table
+   ```
+3. **Cloudflare R2** (Dashboard → R2): create three **private** buckets (no public access, no custom domain): `te-tengo-clips`, `te-tengo-backups`, `te-tengo-tfstate`. Note the **Account ID** (R2 overview): the endpoint is `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. Then *Manage R2 API Tokens* → create tokens with permission **Object Read & Write**, each limited to one bucket ([R2 API tokens](https://developers.cloudflare.com/r2/api/tokens/)); R2 shows the Access Key ID and Secret Access Key **once**:
+   | Token | Bucket | Goes to |
+   |---|---|---|
+   | clips | `te-tengo-clips` | vault `vault_clips_s3_access_key_id` / `vault_clips_s3_secret_access_key` (the API signs pre-signed URLs) |
+   | backups | `te-tengo-backups` | vault `vault_backup_s3_access_key_id` / `vault_backup_s3_secret_access_key` (dump upload and restore) |
+   | tfstate | `te-tengo-tfstate` | operator's `~/.aws/credentials`, profile `[r2-tfstate]` (Terraform state only) |
+
+   One token with Object Read & Write on the three buckets also works; per-bucket tokens limit the damage of a leaked key. Optional: an object lifecycle rule on `te-tengo-backups` that deletes objects after 30 days ([R2 object lifecycles](https://developers.cloudflare.com/r2/buckets/object-lifecycles/)). If the buckets already exist from the OCI attempt, reuse them.
+4. **State backend.** R2 through Terraform's S3 backend ([Cloudflare: Remote R2 backend](https://developers.cloudflare.com/terraform/advanced-topics/remote-backend/)):
+   ```bash
+   cp envs/azure/backend.hcl.example envs/azure/backend.hcl   # set <ACCOUNT_ID>; bucket te-tengo-tfstate, key envs/azure/terraform.tfstate
+   ```
+   `backend.hcl` sets `region = "auto"`, `endpoints = { s3 = "https://<ACCOUNT_ID>.r2.cloudflarestorage.com" }`, `use_path_style = true` and `skip_credentials_validation`, `skip_metadata_api_check`, `skip_region_validation`, `skip_requesting_account_id`, `skip_s3_checksum` (R2 has no STS, IMDS, AWS region list or account id, and not every flexible checksum). Locking: `use_lockfile = true`, a conditional PUT with `If-None-Match`, which R2 lists as supported; no `encrypt`, because R2 does not implement `x-amz-server-side-encryption` and encrypts every object at rest itself ([R2 S3 API compatibility](https://developers.cloudflare.com/r2/api/s3/api/), [R2 data security](https://developers.cloudflare.com/r2/reference/data-security/)). The keys come from the `r2-tfstate` profile, never from the file. **Local state instead:** `printf 'terraform {\n  backend "local" {}\n}\n' > envs/azure/backend_override.tf` (git-ignored) and back up `envs/azure/terraform.tfstate` yourself.
+5. **Variables:** `cp envs/azure/terraform.tfvars.example envs/azure/terraform.tfvars` and fill in the [variables](#variables-of-envsazure): `subscription_id` (step 1), `location` (`chilecentral`), `ssh_public_key`, `app_hostname`, `object_storage_endpoint`. Keep `vm_size`, the disk and `admin_cidrs` at their defaults unless you mean to change the cost or the exposure.
+6. **Plan, review, apply:**
+   ```bash
+   make azure-init && make azure-plan   # review: 8 to add, Standard_B2ats_v2, StandardSSD_LRS 30 GB, location chilecentral
+   make azure-apply
+   terraform -chdir=envs/azure output public_ip dns_record ssh_command memory_profile
+   ```
+   If the apply fails with `RequestDisallowedByAzure`, the region is outside the policy; with `SkuNotAvailable` or `NotAvailableForSubscription`, the size is restricted in that region (step 2).
+7. **DNS at Namify:** in the DNS panel of `reqsai.tech`, add an **A** record, host `api.tetengo`, value = output `public_ip`, TTL 300 (or the lowest Namify allows). Wait until `dig +short api.tetengo.reqsai.tech` returns the IP: Let's Encrypt needs it **before** the first deploy. The IP is static, so the record survives VM restarts and resizes.
+8. **First SSH, host key:** compare the fingerprint `ssh ubuntu@<public_ip>` shows with the one cloud-init printed to the serial console, before accepting it: Portal → the VM → *Help* → *Boot diagnostics* → *Serial log* (block `BEGIN SSH HOST KEY FINGERPRINTS`), or
+   ```bash
+   az vm boot-diagnostics get-boot-log --resource-group te-tengo-prod-rg --name te-tengo-prod | grep -A4 'BEGIN SSH HOST KEY FINGERPRINTS'
+   ```
+   Then `ssh-keyscan -t ed25519 <public_ip>` gives the line for the deploy workflow's `SSH_KNOWN_HOSTS` ([deploy.md](deploy.md)).
+9. **Inventory and deploy:** `make inventory` (writes `ansible/inventory/hosts.yml` from `envs/azure`), then [deploy.md](deploy.md). Images must be **`linux/amd64`** (output `instance_architecture`; the API's image workflow publishes amd64 and arm64).
+
+**Resize** (e.g. to `Standard_B2als_v2`): set `vm_size`, `make azure-plan` shows an in-place update (Azure stops and restarts the VM; the disk and the IP stay), `make azure-apply`, then `make inventory && make deploy`: the inventory's `memory_profile` changes to `medium` and Ansible re-sizes the swap file, the container limits and the JVM.
+
+**Teardown:** dump the database first (`make backup-now`, it lands in R2), then `terraform -chdir=envs/azure destroy`. The OS disk is deleted with the VM and the static IP is released; update or remove the A record at Namify.
+
+## Variables of `envs/azure`
+| Variable | Default | Notes |
+|---|---|---|
+| `subscription_id` | — (required) | `az account show --query id -o tsv` |
+| `location` | `chilecentral` | Validated against the subscription's allowed regions: `canadacentral`, `chilecentral`, `northcentralus`, `westus`, `mexicocentral` |
+| `environment` | `prod` | Names `te-tengo-prod-*`, host alias `te-tengo-prod` |
+| `vm_size` | `Standard_B2ats_v2` | 1 GiB, `tiny`, free hours. Upgrade: `Standard_B2als_v2` (4 GiB, `medium`, billed) |
+| `memory_profile` | `null` | `null` = from `vm_size`; required for a size the module does not know |
+| `admin_username` | `ubuntu` | Same Ansible user as the other environments |
+| `ssh_public_key` | — (required) | `ssh-ed25519` or `ssh-rsa` |
+| `os_disk_storage_account_type` / `os_disk_size_gb` | `StandardSSD_LRS` / `30` | `Premium_LRS` / `64` = P6 |
+| `admin_cidrs` | `["0.0.0.0/0"]` | SSH sources; key-only authentication ([above](#ssh-open-to-anywhere-admin_cidrs)) |
+| `app_hostname` | `""` | `api.tetengo.reqsai.tech` in production |
+| `object_storage_endpoint` | — (required) | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` |
+| `object_storage_region` | `auto` | |
+| `clips_bucket_name` / `backups_bucket_name` | `te-tengo-clips` / `te-tengo-backups` | |
+| `budget_alert_email` / `budget_amount` | `""` / `5` | Empty = no budget ([cost alerts](#cost-alerts)) |
+
+## Checks without a cloud account
+```bash
+make fmt-check validate   # every configuration, terraform init -backend=false
+make tf-test              # terraform test of modules/te-tengo-azure (mock_provider "azurerm") and modules/te-tengo-oci (mock_provider "oci")
+make lint security        # tflint (terraform, aws, azurerm rulesets) and checkov (Docker)
+make local-test           # modules/te-tengo against Floci (AWS alternative)
+```
+`make tf-test` runs 18 Azure runs and 6 OCI runs. The Azure ones check the default host (`Standard_B2ats_v2`, Canonical `ubuntu-24_04-lts` `server`, 30 GB Standard SSD, key-only SSH as `ubuntu`, Trusted Launch, managed boot diagnostics, Standard static IPv4), that the NSG holds exactly five inbound allow rules with only 80/TCP, 443/TCP, 443/UDP and 8322/TCP open to the Internet and 22 to `admin_cidrs` (anywhere by default), the Arm image for an Arm size, the sslip.io fallback, the memory profiles per size (`tiny`, `small`, `medium`, `large`, unknown size), the P6 disk and its precondition, the optional budget (amount, 80 %/100 % notifications, default start date), the rendered inventory field by field and the input validations. They cannot prove that Azure accepts the requests (policy, quotas, image and size availability): that needs the first real plan.
+
+CI (`.github/workflows/terraform.yml`) runs all of the above with **no cloud credentials**; nothing is planned or applied against Azure, OCI or AWS.
+
+## OCI alternative (inactive)
+`envs/oci` + `modules/te-tengo-oci` put the same host on an Oracle Cloud Always Free Ampere A1 VM (1 OCPU / 6 GB). It was the first choice, but no A1 capacity was available, so it stays in the repository as an inactive alternative: it keeps passing `validate`, `tflint`, `checkov` and its mocked `terraform test`, and is **not applied**. `make oci-init`, `oci-plan` and `oci-apply` still work; `make inventory ENV_DIR=envs/oci` renders its inventory (`cloud_provider: oci`, which also turns on the Ansible tasks for the OCI image firewall).
+
+### Resources (`modules/te-tengo-oci`)
 | Area | Resources | Notes |
 |---|---|---|
 | Network | VCN `10.40.0.0/16`, one public `/24` subnet, internet gateway, route table | No NAT gateway, no private subnet (the database is on the host) |
@@ -36,7 +189,7 @@ The Te Tengo backend runs on **one VM** with PostgreSQL, the API, Caddy and Medi
 
 Outputs: `public_ip`, `ssh_command`, `app_url`, `dns_record`, `live_view_*`, `memory_profile`, `instance_architecture`, `image_id`, `availability_domain` and `ansible_inventory` (same contract as the AWS module, `ansible_connection: ssh` without a proxy; [interface-terraform-ansible.md](interface-terraform-ansible.md)).
 
-## Cost: what is free and why
+### Cost: what is free and why (OCI)
 Read on **2026-10-08**. Only the numbers below are sourced; nothing else is assumed.
 
 | Item | Free allowance | Source | Te Tengo uses |
@@ -52,27 +205,16 @@ Read on **2026-10-08**. Only the numbers below are sourced; nothing else is assu
 
 **Capacity:** A1 hosts are often full in popular regions ("Out of host capacity" at apply). Retry later or, in a multi-AD region, set another `availability_domain_number`; Santiago and São Paulo have a single AD.
 
-### Public IP: ephemeral by default
+#### Public IP: ephemeral by default
 The task was to use a reserved public IP if OCI documents it as Always Free. The [Always Free page](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) does not mention reserved (or ephemeral) public IPs and no Oracle price for them was found, so the module **defaults to an ephemeral IP** and offers `public_ip_mode = "reserved"` as an option. An ephemeral IP survives stop/start ("When you stop an instance, its ephemeral public IPs remain assigned to the instance") and is deleted with the instance ([Public IP Addresses](https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/managingpublicIPs.htm)); after a `-replace` of the VM, update the A record at Namify. A reserved IP can only be assigned to a private IP without a public IP ([Assigning a Reserved Public IP](https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/reserved-public-ip-assign.htm)), which is why the VNIC starts without one in that mode. Choose the mode before the first apply.
 
-## Runbook: first apply on OCI (operator)
+### Runbook: first apply on OCI (operator, inactive)
 Prerequisites: Terraform ≥ 1.10, Ansible core ≥ 2.18, an OpenSSH key pair, a Cloudflare account and access to the Namify DNS panel.
 
 1. **OCI account (you create it yourself).** Sign up at Oracle Cloud Free Tier and pick the **home region** carefully: Always Free compute only exists there and it cannot be changed later (e.g. `sa-santiago-1`, Chile Central (Santiago), or `sa-saopaulo-1`, Brazil East (São Paulo), the closest to Peru). Card verification is part of the sign-up.
 2. **API signing key** ([Required Keys and OCIDs](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/apisigningkey.htm)): Console → profile menu → *My profile* → *API keys* → *Add API key* → *Generate API key pair* → download the private key → *Add*. Paste the configuration preview the console shows into `~/.oci/config` (profile `[DEFAULT]`) and point `key_file` at the downloaded key (`chmod 600`). It holds `user`, `fingerprint`, `tenancy`, `region` and `key_file` ([SDK and CLI configuration file](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/sdkconfig.htm)). Never commit it.
-3. **Cloudflare R2** (Dashboard → R2): create three **private** buckets (no public access, no custom domain): `te-tengo-clips`, `te-tengo-backups`, `te-tengo-tfstate`. Note the **Account ID** (R2 overview): the endpoint is `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. Then *Manage R2 API Tokens* → create tokens with permission **Object Read & Write**, each limited to one bucket ([R2 API tokens](https://developers.cloudflare.com/r2/api/tokens/)); R2 shows the Access Key ID and Secret Access Key **once**:
-   | Token | Bucket | Goes to |
-   |---|---|---|
-   | clips | `te-tengo-clips` | vault `vault_clips_s3_access_key_id` / `vault_clips_s3_secret_access_key` (the API signs pre-signed URLs) |
-   | backups | `te-tengo-backups` | vault `vault_backup_s3_access_key_id` / `vault_backup_s3_secret_access_key` (dump upload and restore) |
-   | tfstate | `te-tengo-tfstate` | operator's `~/.aws/credentials`, profile `[r2-tfstate]` (Terraform state only) |
-
-   One token with Object Read & Write on the three buckets also works; per-bucket tokens limit the damage of a leaked key. Optional: an object lifecycle rule on `te-tengo-backups` that deletes objects after 30 days ([R2 object lifecycles](https://developers.cloudflare.com/r2/buckets/object-lifecycles/)).
-4. **State backend.** R2 through Terraform's S3 backend ([Cloudflare: Remote R2 backend](https://developers.cloudflare.com/terraform/advanced-topics/remote-backend/)):
-   ```bash
-   cp envs/oci/backend.hcl.example envs/oci/backend.hcl   # set <ACCOUNT_ID>; bucket te-tengo-tfstate
-   ```
-   `backend.hcl` sets `region = "auto"`, `endpoints = { s3 = "https://<ACCOUNT_ID>.r2.cloudflarestorage.com" }`, `use_path_style = true` and `skip_credentials_validation`, `skip_metadata_api_check`, `skip_region_validation`, `skip_requesting_account_id`, `skip_s3_checksum` (R2 has no STS, IMDS, AWS region list or account id, and not every flexible checksum). Locking: `use_lockfile = true`, a conditional PUT with `If-None-Match`, which R2 lists as supported; no `encrypt`, because R2 does not implement `x-amz-server-side-encryption` and encrypts every object at rest itself ([R2 S3 API compatibility](https://developers.cloudflare.com/r2/api/s3/api/), [R2 data security](https://developers.cloudflare.com/r2/reference/data-security/)). The keys come from the `r2-tfstate` profile, never from the file. **Local state instead:** `printf 'terraform {\n  backend "local" {}\n}\n' > envs/oci/backend_override.tf` (git-ignored) and back up `envs/oci/terraform.tfstate` yourself.
+3. **Cloudflare R2:** buckets and tokens as in the [Azure runbook](#runbook-first-apply-on-azure-operator), step 3 (shared by both environments).
+4. **State backend:** `cp envs/oci/backend.hcl.example envs/oci/backend.hcl` (same R2 settings as the Azure runbook, step 4, key `envs/oci/terraform.tfstate`); local state with `envs/oci/backend_override.tf`.
 5. **Variables:** `cp envs/oci/terraform.tfvars.example envs/oci/terraform.tfvars` and fill in the [variables](#variables-of-envsoci): `region`, `tenancy_ocid`, `ssh_public_key`, `admin_cidrs` (your public IP as `/32`), `app_hostname`, `object_storage_endpoint`.
 6. **Plan, review, apply** (from your terminal; `oci-apply` refuses to run where `CI` or `GITHUB_ACTIONS` is set):
    ```bash
@@ -81,12 +223,12 @@ Prerequisites: Terraform ≥ 1.10, Ansible core ≥ 2.18, an OpenSSH key pair, a
    terraform -chdir=envs/oci output public_ip dns_record ssh_command
    ```
 7. **DNS at Namify:** in the DNS panel of `reqsai.tech`, add an **A** record, host `api.tetengo`, value = output `public_ip`, TTL 300 (or the lowest Namify allows). Wait until `dig +short api.tetengo.reqsai.tech` returns the IP: Let's Encrypt needs it **before** the first deploy.
-8. **First SSH, host key:** `ssh ubuntu@<public_ip>` from an address in `admin_cidrs`. Compare the fingerprint with the one cloud-init prints to the serial console (Console → instance → *Console connection* / *Console history*) before accepting it; then `ssh-keyscan -t ed25519 <public_ip>` gives the line for the deploy workflow's `OCI_SSH_KNOWN_HOSTS` ([deploy.md](deploy.md)).
-9. **Inventory and deploy:** `make inventory` (writes `ansible/inventory/hosts.yml` from `envs/oci`), then [deploy.md](deploy.md). Images must be `linux/arm64`.
+8. **First SSH, host key:** `ssh ubuntu@<public_ip>` from an address in `admin_cidrs`. Compare the fingerprint with the one cloud-init prints to the serial console (Console → instance → *Console connection* / *Console history*) before accepting it; then `ssh-keyscan -t ed25519 <public_ip>` gives the line for the deploy workflow's `SSH_KNOWN_HOSTS` in the GitHub environment `oci` ([deploy.md](deploy.md)).
+9. **Inventory and deploy:** `make inventory ENV_DIR=envs/oci` (writes `ansible/inventory/hosts.yml` from `envs/oci`), then [deploy.md](deploy.md). Images must be `linux/arm64`.
 
 **Teardown:** dump the database first (`make backup-now`, it lands in R2), then `terraform -chdir=envs/oci destroy`. The boot volume is deleted with the instance.
 
-## Variables of `envs/oci`
+### Variables of `envs/oci`
 | Variable | Default | Notes |
 |---|---|---|
 | `region` | — (required) | Home region, e.g. `sa-santiago-1` or `sa-saopaulo-1` |
@@ -105,17 +247,6 @@ Prerequisites: Terraform ≥ 1.10, Ansible core ≥ 2.18, an OpenSSH key pair, a
 | `object_storage_endpoint` | — (required) | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` |
 | `object_storage_region` | `auto` | |
 | `clips_bucket_name` / `backups_bucket_name` | `te-tengo-clips` / `te-tengo-backups` | |
-
-## Checks without a cloud account
-```bash
-make fmt-check validate   # every configuration, terraform init -backend=false
-make tf-test              # terraform test of modules/te-tengo-oci with mock_provider "oci"
-make lint security        # tflint and checkov (Docker)
-make local-test           # modules/te-tengo against Floci (AWS alternative)
-```
-`make tf-test` (6 runs) checks the default A1 host (1 OCPU, 6 GB, 50 GB, newest image, first AD, legacy IMDS off), that only 80/TCP, 443/TCP, 443/UDP and 8322/TCP are open to the Internet and 22 only to `admin_cidrs`, the emptied default security list, both public-IP modes and the sslip.io fallback, the memory profiles, the rendered inventory field by field, the Always Free warning and the input validations. It cannot prove that OCI accepts the requests (shape availability, image names, service limits): that needs the first real plan.
-
-CI (`.github/workflows/terraform.yml`) runs all of the above with **no cloud credentials**; nothing is planned or applied against OCI or AWS.
 
 ## AWS alternative (inactive)
 `envs/mvp` + `modules/te-tengo` put the same host on one EC2 `t4g.small` in `us-east-1`. It stays in the repository as a documented alternative and keeps passing `validate`, `tflint`, `checkov` and the Floci round trips, but it is **not applied**. Its defaults match the production choices: the module creates only the VM, its network, the security group, the IAM role for SSM and the GitHub OIDC deploy role; storage is R2 (`object_storage_endpoint`, `clips_bucket_name`, `backups_bucket_name` → `object_storage_auth: static` in the inventory), e-mail is the SMTP relay, DNS is a hand-made A record (`app_hostname`). `enable_s3_buckets`, `enable_ses`, `enable_sns` and `dns_zone_name` bring back the AWS-native pieces.
