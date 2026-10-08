@@ -1,0 +1,28 @@
+# Copy to terraform.tfvars (git-ignored) and fill in. Never put secrets here.
+aws_region             = "us-east-1"
+environment            = "mvp"
+instance_type          = "t4g.small"
+root_volume_size       = 30
+cpu_credits            = "standard"
+termination_protection = true
+ssh_public_key         = "ssh-ed25519 AAAA... deploy@te-tengo"
+
+# Empty: <elastic-ip-with-dashes>.sslip.io. Set an existing Route53 zone for mvp.<zone>.
+dns_zone_name   = ""
+dns_record_name = "mvp"
+
+# null keeps clips until the team decides the retention (API TT_RETENCION_CLIPS).
+clips_retention_days       = null
+clips_cors_allowed_origins = []
+backups_retention_days     = 30
+
+ses_sender_email = "no-responder@example.com"
+ses_sender_name  = "Te Tengo"
+ses_domain       = ""
+
+# Push goes through Firebase directly; SNS stays off.
+enable_sns = false
+
+github_deploy_repository  = "Te-Tengo-Tech/te-tengo-infra"
+github_deploy_environment = "mvp"
+github_oidc_provider_arn  = ""
