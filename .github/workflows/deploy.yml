@@ -1,8 +1,10 @@
 name: Deploy
 
 # Manual deploy of the app role (new API image tag or configuration). Runbook: docs/deploy.md.
-# - target oci (production, Oracle Cloud Always Free): plain SSH to the VM with a dedicated deploy key
-#   and a pinned host key -> ansible-playbook site.yml --tags app. GitHub environment `prod`.
+# - target azure (production, Azure for Students): plain SSH to the VM with a dedicated deploy key and a
+#   pinned host key -> ansible-playbook site.yml --tags app. GitHub environment `prod`. The NSG lets
+#   GitHub-hosted runners reach port 22 (admin_cidrs defaults to anywhere; keys only).
+# - target oci (inactive alternative, Oracle Cloud Always Free): the same SSH path. GitHub environment `oci`.
 # - target aws (inactive alternative): GitHub OIDC -> AWS role (Terraform output github_deploy_role_arn)
 #   -> SSH over SSM Session Manager -> the same playbook. GitHub environment `mvp`.
 # Inert until the chosen environment is configured: without its variables and secrets the workflow
@@ -12,10 +14,10 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: Where to deploy (oci is production; aws is the inactive alternative)
+        description: Where to deploy (azure is production; oci and aws are inactive alternatives)
         type: choice
-        options: [oci, aws]
-        default: oci
+        options: [azure, oci, aws]
+        default: azure
       api_tag:
         description: Tag of ghcr.io/te-tengo-tech/te-tengo-general-api to deploy (release or sha-<commit>)
         type: string
@@ -45,7 +47,7 @@ jobs:
     name: Check the deploy configuration
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    environment: ${{ inputs.target == 'aws' && 'mvp' || 'prod' }}
+    environment: ${{ inputs.target == 'aws' && 'mvp' || (inputs.target == 'oci' && 'oci' || 'prod') }}
     outputs:
       ready: ${{ steps.check.outputs.ready }}
     steps:
@@ -56,7 +58,7 @@ jobs:
           AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           AWS_REGION: ${{ vars.AWS_REGION }}
           EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
-          OCI_SSH_KNOWN_HOSTS: ${{ vars.OCI_SSH_KNOWN_HOSTS }}
+          SSH_KNOWN_HOSTS: ${{ vars.SSH_KNOWN_HOSTS }}
           APP_URL: ${{ vars.APP_URL }}
           ANSIBLE_INVENTORY: ${{ vars.ANSIBLE_INVENTORY }}
           HAS_VAULT: ${{ secrets.ANSIBLE_VAULT_B64 != '' }}
@@ -64,11 +66,11 @@ jobs:
           HAS_SSH_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY != '' }}
           API_TAG: ${{ inputs.api_tag }}
         run: |
-          if [ "$TARGET" = aws ]; then
-            environment=mvp; required=(AWS_DEPLOY_ROLE_ARN AWS_REGION EC2_INSTANCE_ID APP_URL ANSIBLE_INVENTORY)
-          else
-            environment=prod; required=(OCI_SSH_KNOWN_HOSTS APP_URL ANSIBLE_INVENTORY)
-          fi
+          case "$TARGET" in
+            aws) environment=mvp; required=(AWS_DEPLOY_ROLE_ARN AWS_REGION EC2_INSTANCE_ID APP_URL ANSIBLE_INVENTORY) ;;
+            oci) environment=oci; required=(SSH_KNOWN_HOSTS APP_URL ANSIBLE_INVENTORY) ;;
+            *) environment=prod; required=(SSH_KNOWN_HOSTS APP_URL ANSIBLE_INVENTORY) ;;
+          esac
           missing=()
           for name in "${required[@]}"; do
             [ -n "${!name}" ] || missing+=("variable $name")
@@ -87,17 +89,17 @@ jobs:
           fi
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
-  deploy-oci:
-    name: Deploy the app role (OCI, SSH)
+  deploy-ssh:
+    name: Deploy the app role (${{ inputs.target }}, SSH)
     needs: preflight
-    if: inputs.target == 'oci' && needs.preflight.outputs.ready == 'true'
-    # Port 22 of the VM only accepts admin_cidrs (Terraform). A GitHub-hosted runner has no fixed address:
-    # set the variable DEPLOY_RUNNER to the label of a self-hosted runner inside admin_cidrs, or see
-    # docs/deploy.md for the alternatives.
+    if: inputs.target != 'aws' && needs.preflight.outputs.ready == 'true'
+    # Port 22 only accepts admin_cidrs (Terraform). On Azure that is anywhere by default, so a GitHub-hosted
+    # runner works. With a narrowed admin_cidrs (always on OCI), set the variable DEPLOY_RUNNER to the label
+    # of a self-hosted runner inside admin_cidrs, or see docs/deploy.md for the alternatives.
     runs-on: ${{ vars.DEPLOY_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 40
     environment:
-      name: prod
+      name: ${{ inputs.target == 'oci' && 'oci' || 'prod' }}
       url: ${{ vars.APP_URL }}
     permissions:
       contents: read
@@ -116,7 +118,7 @@ jobs:
       - name: Write the deploy credentials
         env:
           ANSIBLE_INVENTORY: ${{ vars.ANSIBLE_INVENTORY }}
-          OCI_SSH_KNOWN_HOSTS: ${{ vars.OCI_SSH_KNOWN_HOSTS }}
+          SSH_KNOWN_HOSTS: ${{ vars.SSH_KNOWN_HOSTS }}
           ANSIBLE_VAULT_B64: ${{ secrets.ANSIBLE_VAULT_B64 }}
           ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
           DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
@@ -124,10 +126,10 @@ jobs:
           umask 077
           dir="$RUNNER_TEMP/deploy"
           mkdir -p "$dir"
-          # Inventory: `terraform -chdir=envs/oci output -raw ansible_inventory` (no secrets in it).
+          # Inventory: `terraform -chdir=envs/azure output -raw ansible_inventory` (no secrets in it).
           printf '%s\n' "$ANSIBLE_INVENTORY" > "$dir/hosts.yml"
           # Host key of the VM, pinned: `<public ip> ssh-ed25519 AAAA...` (docs/deploy.md).
-          printf '%s\n' "$OCI_SSH_KNOWN_HOSTS" > "$dir/known_hosts"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$dir/known_hosts"
           printf '%s' "$ANSIBLE_VAULT_B64" | base64 --decode > "$dir/vault.yml"
           printf '%s' "$ANSIBLE_VAULT_PASSWORD" > "$dir/vault-pass"
           printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$dir/id_deploy"
