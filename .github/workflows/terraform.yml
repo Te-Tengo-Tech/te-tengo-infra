@@ -1,5 +1,10 @@
 name: Terraform
 
+# Static checks of every configuration (envs/oci, envs/mvp, envs/local, bootstrap and the modules) and
+# an apply/destroy round trip of the AWS module against the Floci emulator. No cloud credentials exist
+# here: `terraform init -backend=false`, the OCI module is tested with a mocked provider, and nothing is
+# ever planned or applied against Oracle Cloud or AWS (the Makefile's apply targets refuse to run in CI).
+
 on:
   pull_request:
     paths:
@@ -40,7 +45,7 @@ env:
 
 jobs:
   static:
-    name: fmt, validate, tflint, checkov
+    name: fmt, validate, test, tflint, checkov
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -59,8 +64,11 @@ jobs:
       - name: terraform fmt
         run: make fmt-check
 
-      - name: terraform validate
+      - name: terraform validate (every env and module, -backend=false)
         run: make validate
+
+      - name: terraform test (OCI module, mocked provider)
+        run: make tf-test
 
       - name: tflint
         run: make lint
@@ -96,7 +104,7 @@ jobs:
 
       - name: Wait for Floci
         run: |
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             curl -fsS -o /dev/null "$FLOCI_ENDPOINT/_localstack/health" && exit 0
             sleep 1
           done
@@ -115,8 +123,9 @@ jobs:
           hosts = inventory["all"]["children"]["te_tengo"]["hosts"]
           (name, host), = hosts.items()
           required = ["ansible_host", "ansible_user", "ansible_connection", "app_hostname", "aws_region",
-                      "memory_profile", "instance_architecture", "clips_s3_bucket", "backup_s3_bucket",
-                      "ses_sender", "push_provider", "live_view_publish_port"]
+                      "cloud_provider", "memory_profile", "instance_architecture", "object_storage_region",
+                      "object_storage_auth", "clips_s3_bucket", "backup_s3_bucket", "ses_sender",
+                      "push_provider", "live_view_publish_port"]
           missing = [key for key in required if host.get(key) in (None, "")]
           if missing:
               sys.exit(f"{name}: missing {missing}")
@@ -132,3 +141,17 @@ jobs:
       - name: Destroy envs/local
         if: always()
         run: make local-destroy FLOCI_ENDPOINT="$FLOCI_ENDPOINT"
+
+      # The envs/mvp defaults: only the VM (storage in R2, e-mail by SMTP, DNS at the registrar).
+      - name: Apply and destroy envs/local as "VM only"
+        env:
+          VM_ONLY: -var enable_s3_buckets=false -var enable_ses=false -var enable_sns=false -var enable_route53=false
+        run: |
+          make local-apply FLOCI_ENDPOINT="$FLOCI_ENDPOINT" LOCAL_TF_ARGS="$VM_ONLY"
+          terraform -chdir=envs/local output -raw ansible_inventory | python3 -c '
+          import sys, yaml
+          (host,) = yaml.safe_load(sys.stdin)["all"]["children"]["te_tengo"]["hosts"].values()
+          assert host["object_storage_auth"] == "static" and host["object_storage_endpoint"], host
+          assert host["ses_sender"] == "" and host["push_provider"] == "fcm", host
+          print("VM-only inventory:", host["object_storage_endpoint"], host["clips_s3_bucket"])'
+          make local-destroy FLOCI_ENDPOINT="$FLOCI_ENDPOINT" LOCAL_TF_ARGS="$VM_ONLY"
