@@ -48,7 +48,9 @@ hlsTrustedProxies: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
 hlsVariant: lowLatency
 hlsSegmentCount: 7
 hlsSegmentDuration: 1s
-hlsPartDuration: 200ms
+# Two frames of the agent's constant 8 fps: Apple's low-latency HLS player needs parts of equal
+# duration, so the part must be a whole number of frames (verified on the iOS simulator).
+hlsPartDuration: 250ms
 hlsMuxerCloseAfter: 30s
 
 ###############################################
