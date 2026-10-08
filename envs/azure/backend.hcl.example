@@ -1,0 +1,22 @@
+# Copy to backend.hcl (git-ignored) and run: make azure-init
+# Terraform state in a private Cloudflare R2 bucket through the S3 backend. The R2 API token
+# (Object Read & Write, scoped to this bucket) is read from the "r2-tfstate" profile of
+# ~/.aws/credentials, or from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY: never write it here.
+bucket    = "te-tengo-tfstate"
+key       = "envs/azure/terraform.tfstate"
+region    = "auto"
+profile   = "r2-tfstate"
+endpoints = { s3 = "https://<ACCOUNT_ID>.r2.cloudflarestorage.com" }
+
+# R2 is not AWS: no STS, no IMDS, no AWS region list, no account id, and no flexible checksums.
+skip_credentials_validation = true
+skip_metadata_api_check     = true
+skip_region_validation      = true
+skip_requesting_account_id  = true
+skip_s3_checksum            = true
+use_path_style              = true
+
+# Lock file next to the state (conditional PUT with If-None-Match, which R2 supports).
+use_lockfile = true
+# No `encrypt = true`: R2 does not implement x-amz-server-side-encryption; it encrypts every
+# object at rest by itself.
