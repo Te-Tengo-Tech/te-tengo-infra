@@ -1,0 +1,8 @@
+# Optional override: build the API image from a local checkout instead of pulling it.
+#   API_BUILD_CONTEXT=../te-tengo-general-api docker compose -f compose.yaml -f compose.build.yaml up -d --build
+# The checkout needs a Dockerfile (te-tengo-general-api ships one). Ansible does the same with
+# app_api_source=build (role `app`, tasks/build.yml).
+services:
+  api:
+    build:
+      context: ${API_BUILD_CONTEXT:?API_BUILD_CONTEXT is required to build the API}

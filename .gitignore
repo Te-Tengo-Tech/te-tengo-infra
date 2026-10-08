@@ -11,3 +11,14 @@ secretos.tfvars
 # Environment
 .env
 .DS_Store
+# Ansible: generated inventory, vault and vault passwords, per-deploy overrides
+ansible/inventory/hosts.yml
+ansible/group_vars/*/vault.yml
+.vault-pass
+*.vault-pass
+ansible/*.local.yml
+# Rendered Compose env files (commit the *.example files instead)
+compose/.env
+compose/api.env
+# Local test host: throwaway secrets, image archive, logs
+test/.work/

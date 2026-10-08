@@ -1,0 +1,52 @@
+# Te Tengo edge proxy. Environment (from compose.yaml): TT_HOSTNAME, ACME_EMAIL, CADDY_CERT_ISSUER.
+# CADDY_CERT_ISSUER is `acme` in production (Let's Encrypt only, so the certificate always lands in
+# the same directory that MediaMTX reads for RTSPS) or `internal` for the local test host (Caddy's
+# own CA, no Internet needed).
+{
+	email {$ACME_EMAIL}
+	cert_issuer {$CADDY_CERT_ISSUER}
+}
+
+{$TT_HOSTNAME} {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# MediaMTX's authorization hook is internal only (MediaMTX calls the API inside the Docker
+	# network); it must never be reachable from the Internet, whatever the API does with the secret.
+	@internal path /api/interno /api/interno/*
+	handle @internal {
+		respond 404
+	}
+
+	# Live view: LL-HLS from MediaMTX. /vivo/camaras/<id>/index.m3u8?token=... -> mediamtx:8888.
+	# MediaMTX asks the API (auth hook) whether the token in the query may read that path.
+	# (`handle` + strip_prefix rather than `handle_path`: every block here must be a `handle` so that
+	# the catch-all below is evaluated last.)
+	handle /vivo/* {
+		uri strip_prefix /vivo
+		reverse_proxy mediamtx:8888 {
+			# MediaMTX answers the first playlist request with a 302 to the same path plus
+			# ?cookieCheck=1 (its HLS session check); put the prefix back on that Location.
+			header_down Location "^/" "/vivo/"
+		}
+	}
+
+	# REST API, its WebSocket endpoints (/api/agente/transmision, /api/vista-en-vivo/*/transmision;
+	# reverse_proxy upgrades them transparently) and the health probes. Swagger UI and /v3/api-docs
+	# are not routed (and the API disables them in production).
+	@api path /api/* /actuator/health /actuator/health/*
+	handle @api {
+		reverse_proxy api:8080 {
+			# Keep WebSocket connections (agent control channel) open across Caddy config reloads.
+			stream_close_delay 5m
+		}
+	}
+
+	handle {
+		respond 404
+	}
+}
