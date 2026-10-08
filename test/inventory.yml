@@ -1,6 +1,8 @@
 ---
-# Local test inventory: the shape Terraform renders for the production VM (envs/oci,
-# docs/interface-terraform-ansible.md), pointing to the tt-test-host container over plain SSH. Floci's
+# Local test inventory: the shape Terraform renders for the production VM (envs/azure,
+# docs/interface-terraform-ansible.md), pointing to the tt-test-host container over plain SSH. The
+# Makefile passes cloud_provider and memory_profile as extra vars (TEST_CLOUD, TEST_MEMORY_PROFILE), so
+# the OCI path can be tested too: make test-all TEST_CLOUD=oci TEST_MEMORY_PROFILE=small TEST_HOST_MEM=2g. Floci's
 # S3 plays Cloudflare R2: endpoint, path style and static keys from the vault. The only difference is the
 # signing region: R2 takes "auto", Floci rejects it ("expecting a region AWS publishes"), so us-east-1.
 all:
@@ -17,10 +19,10 @@ all:
           # Terraform interface variables (docs/interface-terraform-ansible.md).
           app_hostname: localhost
           public_ip: 127.0.0.1
-          cloud_provider: oci
+          cloud_provider: azure  # make TEST_CLOUD=...
           cloud_region: local
-          memory_profile: small
-          instance_architecture: arm64
+          memory_profile: tiny  # make TEST_MEMORY_PROFILE=...
+          instance_architecture: amd64
           object_storage_endpoint: http://floci.test:4566
           object_storage_region: us-east-1  # R2: auto
           object_storage_path_style: true
