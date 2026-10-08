@@ -75,3 +75,13 @@
   loop_control:
     label: "{{ item.name }}"
   when: base_manage_sysctl | bool
+
+- name: Authorize extra SSH keys for the remote user
+  ansible.posix.authorized_key:
+    user: "{{ ansible_user | default('ubuntu') }}"
+    key: "{{ item }}"
+    state: present
+  loop: "{{ base_authorized_keys }}"
+  loop_control:
+    label: "{{ item.split() | last }}"
+  tags: [authorized_keys]

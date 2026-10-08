@@ -5,19 +5,20 @@ app_dir: "{{ te_tengo_dir | default('/opt/te-tengo') }}"
 app_compose_src_dir: "{{ playbook_dir }}/../compose"
 app_compose_wait_timeout: 900
 
-app_hostname: "{{ te_tengo_hostname | default('') }}"
+app_public_hostname: "{{ te_tengo_hostname | default('') }}"
 app_acme_email: "{{ te_tengo_acme_email | default('') }}"
 # acme: Let's Encrypt (production). internal: Caddy's own CA (local test host, no Internet).
 app_cert_issuer: "{{ te_tengo_cert_issuer | default('acme') }}"
 app_http_port: "80"
 app_https_port: "443"
-app_rtsps_port: "8322"
+app_rtsps_port: "{{ te_tengo_rtsps_port | default('8322') }}"
 
 app_aws_region: "{{ te_tengo_aws_region | default('') }}"
 app_clips_bucket: "{{ te_tengo_clips_bucket | default('') }}"
 app_ses_sender: "{{ te_tengo_ses_sender | default('') }}"
 app_push_provider: "{{ te_tengo_push_provider | default('fcm') }}"
 app_mail_provider: "{{ te_tengo_mail_provider | default('ses') }}"
+app_sns_platform_application_arn: "{{ te_tengo_sns_platform_application_arn | default('') }}"
 app_memory_profile: "{{ te_tengo_memory_profile | default('small') }}"
 app_memory_profiles: "{{ te_tengo_memory_profiles }}"
 

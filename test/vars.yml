@@ -6,7 +6,6 @@ te_tengo_acme_email: ops@tetengo.test
 te_tengo_api_source: archive
 te_tengo_api_archive: "{{ playbook_dir }}/../test/.work/te-tengo-general-api.tar"
 te_tengo_push_provider: registro
-te_tengo_mail_provider: ses
 te_tengo_api_settings:
   TT_CLIPS_ENDPOINT: http://floci.test:4566
   TT_CLIPS_PATH_STYLE: "true"

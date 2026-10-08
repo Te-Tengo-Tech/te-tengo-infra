@@ -1,8 +1,7 @@
 ---
-# Memory budget per instance size (te_tengo_memory_profile, from the inventory). Container limits are
+# Memory budget per instance size (memory_profile in the Terraform inventory). Container limits are
 # caps, not reservations; the swap file absorbs short peaks (API start-up, pg_dump).
-te_tengo_memory_profile: small
-
+# Terraform picks small (2 GiB or more) or micro; medium is for a manual upgrade.
 te_tengo_memory_profiles:
   # t4g.micro, 1 GiB
   micro:

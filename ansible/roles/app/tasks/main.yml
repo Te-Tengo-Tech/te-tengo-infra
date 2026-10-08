@@ -2,8 +2,8 @@
 - name: Validate required settings
   ansible.builtin.assert:
     that:
-      - app_hostname | length > 0
-      - app_hostname is match('^[A-Za-z0-9.-]+$')
+      - app_public_hostname | length > 0
+      - app_public_hostname is match('^[A-Za-z0-9.-]+$')
       - app_cert_issuer in app_cert_dirs
       - app_cert_issuer != 'acme' or app_acme_email | length > 0
       - app_memory_profile in app_memory_profiles
@@ -14,12 +14,14 @@
       - app_mail_provider in ['ses', 'registro']
       - app_mail_provider != 'ses' or app_ses_sender | length > 0
       - app_push_provider in ['fcm', 'sns', 'registro']
+      - app_push_provider != 'sns' or app_sns_platform_application_arn | length > 0
+      - app_rtsps_port | int > 0
     fail_msg: >-
-      Missing or invalid settings. From the Terraform inventory: te_tengo_hostname, te_tengo_aws_region,
-      te_tengo_clips_bucket, te_tengo_ses_sender (with SES) and te_tengo_memory_profile (one of
-      {{ app_memory_profiles.keys() | join(', ') }}). From group_vars/te_tengo/vars.yml: te_tengo_acme_email,
-      te_tengo_api_source (registry, archive or build), te_tengo_registry_auth (none or login),
-      te_tengo_push_provider (fcm, sns or registro), te_tengo_mail_provider (ses or registro).
+      Missing or invalid settings. From the Terraform inventory: app_hostname, aws_region, clips_s3_bucket,
+      memory_profile (one of {{ app_memory_profiles.keys() | join(', ') }}), push_provider (fcm, sns or
+      registro; sns needs sns_platform_application_arn) and live_view_publish_port. From
+      group_vars/te_tengo/vars.yml: te_tengo_acme_email, te_tengo_api_source (registry, archive or build),
+      te_tengo_registry_auth (none or login), te_tengo_mail_provider (ses needs ses_sender).
     quiet: true
 
 - name: Validate the vault

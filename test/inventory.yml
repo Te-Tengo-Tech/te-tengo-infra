@@ -1,6 +1,6 @@
 ---
-# Local test inventory: the same variables Terraform writes for the real host
-# (docs/interface-terraform-ansible.md), pointing to the tt-test-host container.
+# Local test inventory: the same variables Terraform writes for the real host, pointing to the
+# tt-test-host container through the Docker connection (no SSH).
 all:
   children:
     te_tengo:
@@ -10,9 +10,15 @@ all:
           ansible_host: tt-test-host
           ansible_user: ubuntu
           ansible_python_interpreter: /usr/bin/python3
-          te_tengo_hostname: localhost
-          te_tengo_memory_profile: small
-          te_tengo_aws_region: us-east-1
-          te_tengo_clips_bucket: te-tengo-clips
-          te_tengo_backups_bucket: te-tengo-backups
-          te_tengo_ses_sender: "Te Tengo <no-responder@tetengo.test>"
+          # Terraform interface variables (docs/interface-terraform-ansible.md).
+          app_hostname: localhost
+          public_ip: 127.0.0.1
+          aws_region: us-east-1
+          memory_profile: small
+          instance_architecture: arm64
+          clips_s3_bucket: te-tengo-clips
+          backup_s3_bucket: te-tengo-backups
+          ses_sender: "Te Tengo <no-responder@tetengo.test>"
+          push_provider: fcm  # overridden by test/vars.yml: registro, no Firebase key in the test
+          sns_platform_application_arn: ""
+          live_view_publish_port: 8322

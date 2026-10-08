@@ -1,0 +1,8 @@
+---
+profile: production
+exclude_paths:
+  - ../test/.work/
+  - inventory/hosts.yml
+  - group_vars/te_tengo/vault.yml
+# ansible-galaxy collections from requirements.yml must be installed (make galaxy).
+offline: false

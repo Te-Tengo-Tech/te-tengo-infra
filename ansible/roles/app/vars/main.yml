@@ -1,6 +1,6 @@
 ---
 app_profile: "{{ app_memory_profiles[app_memory_profile] }}"
-app_base_url: "https://{{ app_hostname }}{{ '' if app_https_port | string == '443' else ':' ~ app_https_port }}"
+app_base_url: "https://{{ app_public_hostname }}{{ '' if app_https_port | string == '443' else ':' ~ app_https_port }}"
 # Where Caddy stores the site certificate (MediaMTX reads it for RTSPS).
 app_cert_dirs:
   acme: acme-v02.api.letsencrypt.org-directory
@@ -12,8 +12,8 @@ app_secrets_dir: "{{ app_dir }}/secrets"
 app_secrets_mount: /run/secrets/te-tengo
 
 app_compose_env:
-  TT_HOSTNAME: "{{ app_hostname }}"
-  ACME_EMAIL: "{{ app_acme_email if app_acme_email | length > 0 else 'ops@' ~ app_hostname }}"
+  TT_HOSTNAME: "{{ app_public_hostname }}"
+  ACME_EMAIL: "{{ app_acme_email if app_acme_email | length > 0 else 'ops@' ~ app_public_hostname }}"
   CADDY_CERT_ISSUER: "{{ app_cert_issuer }}"
   CADDY_CERT_DIR: "{{ app_cert_dir }}"
   HTTP_PORT: "{{ app_http_port }}"
@@ -55,8 +55,11 @@ app_api_env_core:
   TT_SES_REGION: "{{ app_aws_region }}"
   TT_PUSH_PROVEEDOR: "{{ app_push_provider }}"
   TT_FCM_CREDENCIALES: "{{ app_secrets_mount ~ '/fcm.json' if app_push_provider == 'fcm' else '' }}"
+  TT_SNS_ARN_ANDROID: "{{ app_sns_platform_application_arn if app_push_provider == 'sns' else '' }}"
+  TT_SNS_ARN_IOS: "{{ app_sns_platform_application_arn if app_push_provider == 'sns' else '' }}"
+  TT_SNS_REGION: "{{ app_aws_region if app_push_provider == 'sns' else '' }}"
   TT_URL_TRANSMISION: "wss://{{ app_base_url | regex_replace('^https://', '') }}"
-  TT_VIVO_URL_PUBLICACION: "rtsps://{{ app_hostname }}:{{ app_rtsps_port }}/camaras/{camaraId}"
+  TT_VIVO_URL_PUBLICACION: "rtsps://{{ app_public_hostname }}:{{ app_rtsps_port }}/camaras/{camaraId}"
   TT_VIVO_URL_HLS: "{{ app_base_url }}/vivo"
   TT_VIVO_MEDIAMTX_API: http://mediamtx:9997
   TT_VIVO_SECRETO_AUTORIZACION: "{{ vault_mediamtx_auth_secret | default('') }}"

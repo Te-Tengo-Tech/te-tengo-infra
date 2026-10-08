@@ -1,5 +1,6 @@
 ---
-- name: Package the API sources on the controller
+# git archive of the local checkout (committed content only); the git module can only clone.
+- name: Package the API sources on the controller  # noqa: command-instead-of-module
   ansible.builtin.command:
     cmd: >-
       git -C {{ app_api_build_src }} archive --format=tar.gz
