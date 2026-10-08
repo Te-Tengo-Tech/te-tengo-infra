@@ -1,0 +1,169 @@
+name: Deploy MVP
+
+# Manual deploy of the app role (new API image tag or configuration) to the MVP host:
+# GitHub OIDC -> AWS role (Terraform output github_deploy_role_arn) -> SSH over SSM Session Manager
+# -> ansible-playbook site.yml --tags app. Runbook: docs/deploy.md.
+# Inert until the `mvp` environment is configured: without its variables and secrets the workflow
+# only emits a notice.
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_tag:
+        description: Tag of ghcr.io/te-tengo-tech/te-tengo-general-api to deploy (release or sha-<commit>)
+        type: string
+        required: true
+      check_only:
+        description: Run Ansible in check mode (no change on the host)
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-mvp
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  preflight:
+    name: Check the deploy configuration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: mvp
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - name: Check variables and secrets of the mvp environment
+        id: check
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          APP_URL: ${{ vars.APP_URL }}
+          ANSIBLE_INVENTORY: ${{ vars.ANSIBLE_INVENTORY }}
+          HAS_VAULT: ${{ secrets.ANSIBLE_VAULT_B64 != '' }}
+          HAS_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD != '' }}
+          HAS_SSH_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY != '' }}
+          API_TAG: ${{ inputs.api_tag }}
+        run: |
+          missing=()
+          for name in AWS_DEPLOY_ROLE_ARN AWS_REGION EC2_INSTANCE_ID APP_URL ANSIBLE_INVENTORY; do
+            [ -n "${!name}" ] || missing+=("variable $name")
+          done
+          [ "$HAS_VAULT" = true ] || missing+=("secret ANSIBLE_VAULT_B64")
+          [ "$HAS_VAULT_PASSWORD" = true ] || missing+=("secret ANSIBLE_VAULT_PASSWORD")
+          [ "$HAS_SSH_KEY" = true ] || missing+=("secret DEPLOY_SSH_PRIVATE_KEY")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::notice title=Deploy skipped::The mvp environment is not configured yet (missing: ${missing[*]}). See docs/deploy.md."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! "$API_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::Invalid image tag: $API_TAG"
+            exit 1
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy the app role
+    needs: preflight
+    if: needs.preflight.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    environment:
+      name: mvp
+      url: ${{ vars.APP_URL }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+      ANSIBLE_CORE_VERSION: 2.21.5
+      ANSIBLE_FORCE_COLOR: "1"
+      SSM_PLUGIN_VERSION: 1.2.835.0
+      SSM_PLUGIN_SHA256: 7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          # The deploy role may only terminate sessions with this prefix (Terraform, github-deploy.tf).
+          role-session-name: te-tengo-mvp-deploy-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Install the Session Manager plugin
+        run: |
+          deb="$RUNNER_TEMP/session-manager-plugin.deb"
+          curl -fsSL -o "$deb" \
+            "https://s3.amazonaws.com/session-manager-downloads/plugin/$SSM_PLUGIN_VERSION/ubuntu_64bit/session-manager-plugin.deb"
+          echo "$SSM_PLUGIN_SHA256  $deb" | sha256sum --check --strict
+          sudo dpkg -i "$deb"
+          session-manager-plugin --version
+
+      - name: Install Ansible
+        run: |
+          pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
+          ansible-galaxy collection install -r ansible/requirements.yml
+
+      - name: Write the deploy credentials
+        env:
+          ANSIBLE_INVENTORY: ${{ vars.ANSIBLE_INVENTORY }}
+          ANSIBLE_VAULT_B64: ${{ secrets.ANSIBLE_VAULT_B64 }}
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+        run: |
+          umask 077
+          dir="$RUNNER_TEMP/deploy"
+          mkdir -p "$dir"
+          # Inventory: `terraform output -raw ansible_inventory` of envs/mvp (no secrets in it).
+          printf '%s\n' "$ANSIBLE_INVENTORY" > "$dir/hosts.yml"
+          printf '%s' "$ANSIBLE_VAULT_B64" | base64 --decode > "$dir/vault.yml"
+          printf '%s' "$ANSIBLE_VAULT_PASSWORD" > "$dir/vault-pass"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$dir/id_deploy"
+          echo "DEPLOY_DIR=$dir" >> "$GITHUB_ENV"
+
+      - name: Run the app role
+        working-directory: ansible
+        env:
+          API_TAG: ${{ inputs.api_tag }}
+          CHECK_ONLY: ${{ inputs.check_only }}
+        run: |
+          args=()
+          [ "$CHECK_ONLY" = true ] && args+=(--check --diff)
+          ansible-playbook site.yml --tags app "${args[@]}" \
+            --inventory "$DEPLOY_DIR/hosts.yml" \
+            --vault-password-file "$DEPLOY_DIR/vault-pass" \
+            --extra-vars "@$DEPLOY_DIR/vault.yml" \
+            --extra-vars "ansible_ssh_private_key_file=$DEPLOY_DIR/id_deploy" \
+            --extra-vars "te_tengo_api_source=registry te_tengo_api_tag=$API_TAG"
+
+      - name: Check the public health endpoint
+        if: ${{ !inputs.check_only }}
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+          API_TAG: ${{ inputs.api_tag }}
+        run: |
+          for attempt in $(seq 1 30); do
+            status=$(curl -fsS --max-time 10 "$APP_URL/actuator/health" | jq -r '.status' || true)
+            if [ "$status" = "UP" ]; then
+              echo "$APP_URL/actuator/health is UP with te-tengo-general-api:$API_TAG" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Attempt $attempt: status '${status:-none}'"
+            sleep 10
+          done
+          echo "::error::$APP_URL/actuator/health did not report UP"
+          exit 1
+
+      - name: Remove the deploy credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/deploy"
