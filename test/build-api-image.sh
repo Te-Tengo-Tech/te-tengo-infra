@@ -20,11 +20,13 @@ if [ ! -f "$CONTEXT/Dockerfile" ]; then
   cp api.Dockerfile "$CONTEXT/Dockerfile"
 fi
 
-docker build --label "org.opencontainers.image.revision=$revision" --tag "$IMAGE" "$CONTEXT"
-docker save --output "$WORK/te-tengo-general-api.tar.partial" "$IMAGE"
-if cmp -s "$WORK/te-tengo-general-api.tar.partial" "$WORK/te-tengo-general-api.tar" 2>/dev/null; then
-  rm "$WORK/te-tengo-general-api.tar.partial"
-else
-  mv "$WORK/te-tengo-general-api.tar.partial" "$WORK/te-tengo-general-api.tar"
+docker build --provenance=false --label "org.opencontainers.image.revision=$revision" --tag "$IMAGE" "$CONTEXT"
+# Save only when the image changed, so a redeploy of the same image uploads and loads nothing.
+image_id=$(docker image inspect --format '{{.Id}}' "$IMAGE")
+if [ -s "$WORK/te-tengo-general-api.tar" ] && [ "$(cat "$WORK/te-tengo-general-api.id" 2>/dev/null)" = "$image_id" ]; then
+  echo "Image unchanged ($image_id): keeping test/$WORK/te-tengo-general-api.tar"
+  exit 0
 fi
+docker save --output "$WORK/te-tengo-general-api.tar" "$IMAGE"
+echo "$image_id" > "$WORK/te-tengo-general-api.id"
 echo "Saved $IMAGE (te-tengo-general-api ${revision:0:12}) to test/$WORK/te-tengo-general-api.tar"
