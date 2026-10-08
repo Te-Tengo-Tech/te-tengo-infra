@@ -1,0 +1,17 @@
+---
+backup_app_dir: "{{ te_tengo_dir | default('/opt/te-tengo') }}"
+backup_enabled: "{{ te_tengo_backup_enabled | default(true) }}"
+backup_dir: /var/backups/te-tengo
+backup_keep_local: "{{ te_tengo_backup_keep_local | default(7) }}"
+backup_on_calendar: "{{ te_tengo_backup_on_calendar | default('*-*-* 08:30:00') }}"
+# Off-host copy: S3 bucket from Terraform (versioned, encrypted, with a lifecycle rule). Empty keeps
+# the dumps on the host only.
+backup_bucket: "{{ te_tengo_backups_bucket | default('') }}"
+backup_s3_prefix: postgres
+backup_aws_region: "{{ te_tengo_aws_region | default('us-east-1') }}"
+# S3-compatible endpoint override (local test: Floci); empty is AWS.
+backup_s3_endpoint: ""
+# Extra environment of the backup service (local test: static Floci keys); empty uses the instance role.
+backup_aws_env: {}
+backup_awscli_url: >-
+  https://awscli.amazonaws.com/awscli-exe-linux-{{ 'aarch64' if ansible_facts['architecture'] == 'aarch64' else 'x86_64' }}.zip

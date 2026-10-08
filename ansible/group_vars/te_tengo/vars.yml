@@ -1,0 +1,51 @@
+---
+# Settings shared by every Te Tengo host. Secrets come from vault.yml (see vault.yml.example).
+
+# --- Terraform -> Ansible interface (docs/interface-terraform-ansible.md) ---------------------------
+# The Terraform-generated inventory sets app_hostname, aws_region, memory_profile, clips_s3_bucket,
+# backup_s3_bucket, ses_sender, push_provider, sns_platform_application_arn and live_view_publish_port
+# on the host. The roles read them through these te_tengo_* names; a hand-written inventory may set
+# the te_tengo_* names directly instead (host variables win over these group defaults).
+te_tengo_hostname: "{{ app_hostname | default('') }}"
+te_tengo_aws_region: "{{ aws_region | default('') }}"
+te_tengo_memory_profile: "{{ memory_profile | default('small') }}"
+te_tengo_clips_bucket: "{{ clips_s3_bucket | default('') }}"
+te_tengo_backups_bucket: "{{ backup_s3_bucket | default('') }}"
+te_tengo_ses_sender: "{{ ses_sender | default('') }}"
+te_tengo_push_provider: "{{ push_provider | default('fcm') }}"
+te_tengo_sns_platform_application_arn: "{{ sns_platform_application_arn | default('') }}"
+te_tengo_rtsps_port: "{{ live_view_publish_port | default(8322) }}"
+# SES when Terraform verified a sender, otherwise e-mails are only logged.
+te_tengo_mail_provider: "{{ 'ses' if te_tengo_ses_sender | length > 0 else 'registro' }}"
+# ----------------------------------------------------------------------------------------------------
+
+te_tengo_dir: /opt/te-tengo
+# Let's Encrypt account e-mail (expiry notices). Required.
+te_tengo_acme_email: ""
+
+# API image: published by te-tengo-general-api's release workflow. Pin a release or commit tag for
+# production deploys (`-e te_tengo_api_tag=...`).
+te_tengo_api_repository: ghcr.io/te-tengo-tech/te-tengo-general-api
+te_tengo_api_tag: latest
+# registry (pull te_tengo_api_repository:te_tengo_api_tag), archive (docker load a file from the
+# controller) or build (build on the host from a local checkout).
+te_tengo_api_source: registry
+# none (public package) or login (private package: te_tengo_registry_username + vault_registry_password,
+# a token with read:packages).
+te_tengo_registry_auth: none
+te_tengo_registry_username: ""
+
+te_tengo_postgres_image: postgres:18
+te_tengo_caddy_image: caddy:2.11-alpine
+te_tengo_mediamtx_image: bluenviron/mediamtx:1.21.1
+
+# Extra API settings merged last into api.env (e.g. TT_RETENCION_CLIPS, TT_AGENTE_VERSION_PUBLICADA).
+te_tengo_api_settings: {}
+
+# Daily PostgreSQL dump to te_tengo_backups_bucket.
+te_tengo_backup_enabled: true
+te_tengo_backup_on_calendar: "*-*-* 08:30:00"  # 03:30 in Lima (UTC-5)
+te_tengo_backup_keep_local: 7
+
+# Public SSH keys added to the ubuntu user (base role), e.g. the deploy key of .github/workflows/deploy.yml.
+te_tengo_authorized_keys: []

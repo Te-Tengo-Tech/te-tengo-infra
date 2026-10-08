@@ -1,0 +1,70 @@
+# MediaMTX for the Te Tengo live view (live view v2): the household agent publishes H.264 over
+# RTSPS to camaras/<camaraId>; the app reads LL-HLS through Caddy (/vivo/...).
+# compose.yaml fills the host-specific values through MTX_* environment variables, which override
+# this file: authHTTPAddress (with the shared secret), rtspServerCert and rtspServerKey (Caddy's
+# certificate). The placeholders below are never used as they are.
+
+logLevel: info
+logDestinations: [stdout]
+
+readTimeout: 10s
+writeTimeout: 10s
+
+###############################################
+# Authorization: every publish and read is asked to the API, which knows the publish tokens it
+# issued to agents and the viewer tokens of active live view sessions.
+authMethod: http
+authHTTPAddress: http://api:8080/api/interno/mediamtx/autorizar?secreto=OVERRIDDEN_BY_MTX_AUTHHTTPADDRESS
+# The control API is not asked to the hook: the API itself calls it (to kick a publisher or reader on
+# pause or consent revocation) and it is reachable only inside the Docker network (never published).
+authHTTPExclude:
+  - action: api
+
+###############################################
+# Control API: internal only (no port published in compose.yaml).
+api: true
+apiAddress: :9997
+metrics: false
+pprof: false
+playback: false
+
+###############################################
+# RTSPS only, TCP only: the agent publishes from behind home NATs over the Internet.
+rtsp: true
+rtspTransports: [tcp]
+rtspEncryption: strict
+rtspsAddress: :8322
+rtspServerKey: /caddy-data/OVERRIDDEN_BY_MTX_RTSPSERVERKEY
+rtspServerCert: /caddy-data/OVERRIDDEN_BY_MTX_RTSPSERVERCERT
+rtspAuthMethods: [basic]
+
+###############################################
+# LL-HLS over plain HTTP inside the Docker network; Caddy terminates TLS (required by Apple players).
+hls: true
+hlsAddress: :8888
+hlsEncryption: false
+hlsAllowOrigins: ["*"]
+hlsTrustedProxies: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+# Two frames of the agent's constant 8 fps: Apple's low-latency HLS player needs parts of equal
+# duration, so the part must be a whole number of frames (verified on the iOS simulator).
+hlsPartDuration: 250ms
+hlsMuxerCloseAfter: 30s
+
+###############################################
+# Everything else is off.
+rtmp: false
+webrtc: false
+srt: false
+moq: false
+
+###############################################
+# Only camera paths exist; any other path is rejected before the auth hook.
+pathDefaults:
+  source: publisher
+  overridePublisher: true
+
+paths:
+  "~^camaras/[0-9A-Za-z-]+$": {}

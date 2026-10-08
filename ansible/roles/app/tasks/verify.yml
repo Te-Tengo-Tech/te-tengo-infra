@@ -1,0 +1,61 @@
+---
+# Runs on the host against its public name, through Caddy, as a phone or agent would.
+- name: Read Caddy's local root certificate (internal issuer only)
+  ansible.builtin.command:
+    cmd: docker compose exec -T caddy cat /data/caddy/pki/authorities/local/root.crt
+    chdir: "{{ app_dir }}"
+  register: app_caddy_root
+  changed_when: false
+  when: app_cert_issuer == 'internal'
+
+- name: Trust Caddy's local root certificate for the checks
+  ansible.builtin.copy:
+    content: "{{ app_caddy_root.stdout }}\n"
+    dest: "{{ app_dir }}/caddy/local-root.crt"
+    owner: root
+    group: root
+    mode: "0644"
+  when: app_cert_issuer == 'internal'
+
+- name: Wait for the API health endpoint over HTTPS
+  ansible.builtin.uri:
+    url: "{{ app_base_url }}/actuator/health"
+    ca_path: "{{ app_dir ~ '/caddy/local-root.crt' if app_cert_issuer == 'internal' else omit }}"
+    return_content: true
+    status_code: 200
+  register: app_health
+  until: app_health.status == 200 and (app_health.json.status | default('')) == 'UP'
+  retries: "{{ app_verify_retries }}"
+  delay: "{{ app_verify_delay }}"
+
+- name: Check that the live view (HLS) rejects a request without a token
+  ansible.builtin.uri:
+    url: "{{ app_base_url }}/vivo/camaras/00000000-0000-0000-0000-000000000000/index.m3u8"
+    ca_path: "{{ app_dir ~ '/caddy/local-root.crt' if app_cert_issuer == 'internal' else omit }}"
+    status_code: 401
+  register: app_hls
+  until: app_hls.status == 401
+  retries: 6
+  delay: 5
+
+- name: Check that internal and documentation endpoints are not exposed
+  ansible.builtin.uri:
+    url: "{{ app_base_url }}{{ item }}"
+    ca_path: "{{ app_dir ~ '/caddy/local-root.crt' if app_cert_issuer == 'internal' else omit }}"
+    method: POST
+    status_code: 404
+  loop:
+    - /api/interno/mediamtx/autorizar
+    - /swagger-ui.html
+    - /v3/api-docs
+
+- name: Check the HSTS header
+  ansible.builtin.assert:
+    that:
+      - "'max-age=' in (app_health.strict_transport_security | default(''))"
+    fail_msg: Caddy does not send Strict-Transport-Security.
+    quiet: true
+
+- name: Report the deployment
+  ansible.builtin.debug:
+    msg: "{{ app_base_url }} is UP (API image {{ app_api_image_ref | trim }}); HLS requires a token."

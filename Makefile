@@ -98,3 +98,8 @@ mvp-init: ## Init envs/mvp with the S3 backend (needs envs/mvp/backend.hcl and r
 
 mvp-plan: ## Plan envs/mvp (real AWS; review before any apply, see docs/terraform.md)
 	$(TF) -chdir=$(MVP_DIR) plan -input=false -out=tfplan
+
+# ----------------------------------------------------------------------------
+# Ansible + Docker Compose (ansible/, compose/, test/)
+# ----------------------------------------------------------------------------
+include ansible.mk

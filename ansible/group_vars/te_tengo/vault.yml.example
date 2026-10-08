@@ -1,0 +1,26 @@
+---
+# Copy to vault.yml (git-ignored), fill in and encrypt: ansible-vault encrypt group_vars/te_tengo/vault.yml
+# Every value below is a placeholder. See docs/deploy.md ("Secrets inventory").
+
+# PostgreSQL password (16+ characters): openssl rand -base64 24
+vault_postgres_password: ""
+
+# RS256 key pair that signs and validates the API's JWTs (PKCS#8 private key, X.509 public key):
+#   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out privada.pem
+#   openssl pkey -in privada.pem -pubout -out publica.pem
+vault_jwt_private_key_pem: |
+  -----BEGIN PRIVATE KEY-----
+  -----END PRIVATE KEY-----
+vault_jwt_public_key_pem: |
+  -----BEGIN PUBLIC KEY-----
+  -----END PUBLIC KEY-----
+
+# Shared secret of MediaMTX's authorization hook (TT_VIVO_SECRETO_AUTORIZACION): openssl rand -hex 32
+vault_mediamtx_auth_secret: ""
+
+# Firebase service-account JSON key (required when te_tengo_push_provider is fcm). Paste the whole
+# file content; Ansible writes it to /opt/te-tengo/secrets/fcm.json (0600) and never logs it.
+vault_fcm_credentials_json: ""
+
+# Only with te_tengo_registry_auth: login (GitHub token with read:packages).
+vault_registry_password: ""

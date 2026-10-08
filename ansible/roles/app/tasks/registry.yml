@@ -1,0 +1,7 @@
+---
+- name: Log in to the container registry
+  ansible.builtin.command:
+    cmd: docker login {{ app_registry_host }} --username {{ app_registry_username }} --password-stdin
+    stdin: "{{ vault_registry_password }}"
+  changed_when: false
+  no_log: true
