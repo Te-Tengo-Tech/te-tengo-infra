@@ -76,6 +76,9 @@
     label: "{{ item.name }}"
   when: base_manage_sysctl | bool
 
+- name: Open the public ports in the image's host firewall
+  ansible.builtin.include_tasks: firewall.yml
+
 - name: Authorize extra SSH keys for the remote user
   ansible.posix.authorized_key:
     user: "{{ ansible_user | default('ubuntu') }}"

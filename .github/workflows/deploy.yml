@@ -1,14 +1,21 @@
-name: Deploy MVP
+name: Deploy
 
-# Manual deploy of the app role (new API image tag or configuration) to the MVP host:
-# GitHub OIDC -> AWS role (Terraform output github_deploy_role_arn) -> SSH over SSM Session Manager
-# -> ansible-playbook site.yml --tags app. Runbook: docs/deploy.md.
-# Inert until the `mvp` environment is configured: without its variables and secrets the workflow
-# only emits a notice.
+# Manual deploy of the app role (new API image tag or configuration). Runbook: docs/deploy.md.
+# - target oci (production, Oracle Cloud Always Free): plain SSH to the VM with a dedicated deploy key
+#   and a pinned host key -> ansible-playbook site.yml --tags app. GitHub environment `prod`.
+# - target aws (inactive alternative): GitHub OIDC -> AWS role (Terraform output github_deploy_role_arn)
+#   -> SSH over SSM Session Manager -> the same playbook. GitHub environment `mvp`.
+# Inert until the chosen environment is configured: without its variables and secrets the workflow
+# only emits a notice. No Terraform runs here: infrastructure changes are applied by an operator.
 
 on:
   workflow_dispatch:
     inputs:
+      target:
+        description: Where to deploy (oci is production; aws is the inactive alternative)
+        type: choice
+        options: [oci, aws]
+        default: oci
       api_tag:
         description: Tag of ghcr.io/te-tengo-tech/te-tengo-general-api to deploy (release or sha-<commit>)
         type: string
@@ -19,7 +26,7 @@ on:
         default: false
 
 concurrency:
-  group: deploy-mvp
+  group: deploy-${{ inputs.target }}
   cancel-in-progress: false
 
 permissions:
@@ -29,21 +36,27 @@ defaults:
   run:
     shell: bash
 
+env:
+  ANSIBLE_CORE_VERSION: 2.21.5
+  ANSIBLE_FORCE_COLOR: "1"
+
 jobs:
   preflight:
     name: Check the deploy configuration
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    environment: mvp
+    environment: ${{ inputs.target == 'aws' && 'mvp' || 'prod' }}
     outputs:
       ready: ${{ steps.check.outputs.ready }}
     steps:
-      - name: Check variables and secrets of the mvp environment
+      - name: Check variables and secrets of the environment
         id: check
         env:
+          TARGET: ${{ inputs.target }}
           AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           AWS_REGION: ${{ vars.AWS_REGION }}
           EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          OCI_SSH_KNOWN_HOSTS: ${{ vars.OCI_SSH_KNOWN_HOSTS }}
           APP_URL: ${{ vars.APP_URL }}
           ANSIBLE_INVENTORY: ${{ vars.ANSIBLE_INVENTORY }}
           HAS_VAULT: ${{ secrets.ANSIBLE_VAULT_B64 != '' }}
@@ -51,15 +64,20 @@ jobs:
           HAS_SSH_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY != '' }}
           API_TAG: ${{ inputs.api_tag }}
         run: |
+          if [ "$TARGET" = aws ]; then
+            environment=mvp; required=(AWS_DEPLOY_ROLE_ARN AWS_REGION EC2_INSTANCE_ID APP_URL ANSIBLE_INVENTORY)
+          else
+            environment=prod; required=(OCI_SSH_KNOWN_HOSTS APP_URL ANSIBLE_INVENTORY)
+          fi
           missing=()
-          for name in AWS_DEPLOY_ROLE_ARN AWS_REGION EC2_INSTANCE_ID APP_URL ANSIBLE_INVENTORY; do
+          for name in "${required[@]}"; do
             [ -n "${!name}" ] || missing+=("variable $name")
           done
           [ "$HAS_VAULT" = true ] || missing+=("secret ANSIBLE_VAULT_B64")
           [ "$HAS_VAULT_PASSWORD" = true ] || missing+=("secret ANSIBLE_VAULT_PASSWORD")
           [ "$HAS_SSH_KEY" = true ] || missing+=("secret DEPLOY_SSH_PRIVATE_KEY")
           if [ ${#missing[@]} -gt 0 ]; then
-            echo "::notice title=Deploy skipped::The mvp environment is not configured yet (missing: ${missing[*]}). See docs/deploy.md."
+            echo "::notice title=Deploy skipped::The $environment environment is not configured yet (missing: ${missing[*]}). See docs/deploy.md."
             echo "ready=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -69,10 +87,97 @@ jobs:
           fi
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
-  deploy:
-    name: Deploy the app role
+  deploy-oci:
+    name: Deploy the app role (OCI, SSH)
     needs: preflight
-    if: needs.preflight.outputs.ready == 'true'
+    if: inputs.target == 'oci' && needs.preflight.outputs.ready == 'true'
+    # Port 22 of the VM only accepts admin_cidrs (Terraform). A GitHub-hosted runner has no fixed address:
+    # set the variable DEPLOY_RUNNER to the label of a self-hosted runner inside admin_cidrs, or see
+    # docs/deploy.md for the alternatives.
+    runs-on: ${{ vars.DEPLOY_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 40
+    environment:
+      name: prod
+      url: ${{ vars.APP_URL }}
+    permissions:
+      contents: read
+    env:
+      ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Ansible
+        run: |
+          pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
+          ansible-galaxy collection install -r ansible/requirements.yml
+
+      - name: Write the deploy credentials
+        env:
+          ANSIBLE_INVENTORY: ${{ vars.ANSIBLE_INVENTORY }}
+          OCI_SSH_KNOWN_HOSTS: ${{ vars.OCI_SSH_KNOWN_HOSTS }}
+          ANSIBLE_VAULT_B64: ${{ secrets.ANSIBLE_VAULT_B64 }}
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+        run: |
+          umask 077
+          dir="$RUNNER_TEMP/deploy"
+          mkdir -p "$dir"
+          # Inventory: `terraform -chdir=envs/oci output -raw ansible_inventory` (no secrets in it).
+          printf '%s\n' "$ANSIBLE_INVENTORY" > "$dir/hosts.yml"
+          # Host key of the VM, pinned: `<public ip> ssh-ed25519 AAAA...` (docs/deploy.md).
+          printf '%s\n' "$OCI_SSH_KNOWN_HOSTS" > "$dir/known_hosts"
+          printf '%s' "$ANSIBLE_VAULT_B64" | base64 --decode > "$dir/vault.yml"
+          printf '%s' "$ANSIBLE_VAULT_PASSWORD" > "$dir/vault-pass"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$dir/id_deploy"
+          echo "DEPLOY_DIR=$dir" >> "$GITHUB_ENV"
+
+      - name: Run the app role
+        working-directory: ansible
+        env:
+          API_TAG: ${{ inputs.api_tag }}
+          CHECK_ONLY: ${{ inputs.check_only }}
+        run: |
+          # Replaces ansible.cfg's ssh_args: an unknown or changed host key stops the deploy
+          # (StrictHostKeyChecking=yes) instead of being accepted (accept-new).
+          ANSIBLE_SSH_ARGS="-o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=30 -o IdentitiesOnly=yes"
+          export ANSIBLE_SSH_ARGS="$ANSIBLE_SSH_ARGS -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$DEPLOY_DIR/known_hosts"
+          args=()
+          [ "$CHECK_ONLY" = true ] && args+=(--check --diff)
+          ansible-playbook site.yml --tags app "${args[@]}" \
+            --inventory "$DEPLOY_DIR/hosts.yml" \
+            --vault-password-file "$DEPLOY_DIR/vault-pass" \
+            --extra-vars "@$DEPLOY_DIR/vault.yml" \
+            --extra-vars "ansible_ssh_private_key_file=$DEPLOY_DIR/id_deploy" \
+            --extra-vars "te_tengo_api_source=registry te_tengo_api_tag=$API_TAG"
+
+      - name: Check the public health endpoint
+        if: ${{ !inputs.check_only }}
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+          API_TAG: ${{ inputs.api_tag }}
+        run: |
+          for attempt in $(seq 1 30); do
+            status=$(curl -fsS --max-time 10 "$APP_URL/actuator/health" | jq -r '.status' || true)
+            if [ "$status" = "UP" ]; then
+              echo "$APP_URL/actuator/health is UP with te-tengo-general-api:$API_TAG" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Attempt $attempt: status '${status:-none}'"
+            sleep 10
+          done
+          echo "::error::$APP_URL/actuator/health did not report UP"
+          exit 1
+
+      - name: Remove the deploy credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/deploy"
+
+  deploy-aws:
+    name: Deploy the app role (AWS, SSH over SSM)
+    needs: preflight
+    if: inputs.target == 'aws' && needs.preflight.outputs.ready == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     environment:
@@ -83,8 +188,6 @@ jobs:
       id-token: write
     env:
       ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
-      ANSIBLE_CORE_VERSION: 2.21.5
-      ANSIBLE_FORCE_COLOR: "1"
       SSM_PLUGIN_VERSION: 1.2.835.0
       SSM_PLUGIN_SHA256: 7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03
     steps:
@@ -124,7 +227,7 @@ jobs:
           umask 077
           dir="$RUNNER_TEMP/deploy"
           mkdir -p "$dir"
-          # Inventory: `terraform output -raw ansible_inventory` of envs/mvp (no secrets in it).
+          # Inventory: `terraform -chdir=envs/mvp output -raw ansible_inventory` (no secrets in it).
           printf '%s\n' "$ANSIBLE_INVENTORY" > "$dir/hosts.yml"
           printf '%s' "$ANSIBLE_VAULT_B64" | base64 --decode > "$dir/vault.yml"
           printf '%s' "$ANSIBLE_VAULT_PASSWORD" > "$dir/vault-pass"

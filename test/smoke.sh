@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Smoke test of the deployed test host, from the Mac, through Caddy over HTTPS (make test-smoke).
 # Checks: health, HSTS, hidden endpoints, sign-up and sign-in, an agent's pre-signed clip URL on
-# Floci (and the upload itself), HLS 401 without a token, RTSPS with Caddy's certificate, and a
-# backup to S3 (Floci) restored back. Prints a PASS/FAIL summary; exit code 1 on any failure.
+# Floci standing in for Cloudflare R2 (and the upload itself), HLS 401 without a token, RTSPS with
+# Caddy's certificate, the production-shaped settings (R2-style keys, no AWS credentials, OCI image
+# firewall), and a backup to the bucket restored back. Prints a PASS/FAIL summary; exit code 1 on any failure.
 set -uo pipefail
 cd "$(dirname "$0")"
 
@@ -107,17 +108,35 @@ rtsps_subject=$(openssl s_client -connect "$RTSPS" -servername localhost -CAfile
   | openssl x509 -noout -ext subjectAltName 2>/dev/null | tr -d ' \n')
 check "RTSPS on 8322 presents Caddy's certificate for the host name" grep -q 'DNS:localhost' <<<"$rtsps_subject"
 
-# 6. Backup to S3 (Floci) and restore.
+# 6. Production-shaped configuration: R2-style object storage with static keys, no AWS credentials,
+#    and the OCI image firewall opened by the base role.
+# The bash -c bodies below are single-quoted on purpose: the file contents arrive as $1.
+api_env=$(docker exec "$HOST" cat "$APP_DIR/api.env")
+# shellcheck disable=SC2016
+check "api.env signs clips with static keys on an S3-compatible endpoint (R2 style)" \
+  bash -c 'grep -q "^TT_CLIPS_ENDPOINT=.http://floci.test:4566" <<<"$1" && grep -q "^TT_CLIPS_PATH_STYLE=.true" <<<"$1" && grep -q "^TT_CLIPS_ACCESS_KEY=" <<<"$1"' _ "$api_env"
+# shellcheck disable=SC2016
+check "api.env holds no AWS credentials" bash -c '! grep -q "^AWS_" <<<"$1"' _ "$api_env"
+rules=$(docker exec "$HOST" cat /etc/iptables/rules.v4)
+# shellcheck disable=SC2016
+check "rules.v4 accepts 80, 443/tcp, 443/udp and 8322 before its INPUT REJECT" bash -c '
+  reject=$(grep -n "^-A INPUT -j REJECT" <<<"$1" | cut -d: -f1)
+  for p in "tcp.*--dport 80 " "tcp.*--dport 443 " "udp.*--dport 443 " "tcp.*--dport 8322 "; do
+    line=$(grep -n -- "-A INPUT -p ${p}" <<<"$1" | head -n1 | cut -d: -f1)
+    [ -n "$line" ] && [ "$line" -lt "$reject" ] || exit 1
+  done' _ "$rules"
+
+# 7. Backup to the bucket (Floci as R2) and restore.
 if [ "$RUN_BACKUP" = 1 ]; then
   check "te-tengo-backup.timer is scheduled" docker exec "$HOST" systemctl is-enabled --quiet te-tengo-backup.timer
   docker exec "$HOST" systemctl start te-tengo-backup.service
   check "te-tengo-backup.service dumps PostgreSQL" [ $? -eq 0 ]
   listing=$(docker exec "$HOST" sh -c 'set -a; . /etc/te-tengo/backup.env; aws s3 ls s3://te-tengo-backups/postgres/ --endpoint-url http://floci.test:4566' 2>&1)
-  check "The dump is in s3://te-tengo-backups/postgres/ (Floci)" grep -q 'te-tengo-.*\.dump' <<<"$listing"
+  check "The dump is in s3://te-tengo-backups/postgres/ (Floci as R2, static keys)" grep -q 'te-tengo-.*\.dump' <<<"$listing"
 
   psql_host </dev/null -c "delete from instalaciones where hogar_id = '$household'" >/dev/null
   docker exec "$HOST" /usr/local/sbin/te-tengo-restore latest >/dev/null 2>&1
-  check "te-tengo-restore latest restores the dump from S3" [ $? -eq 0 ]
+  check "te-tengo-restore latest restores the dump from the bucket" [ $? -eq 0 ]
   for _ in $(seq 1 60); do
     [ "$(curl -s --cacert "$CA" "$BASE/actuator/health" | jq -r .status 2>/dev/null)" = UP ] && break
     sleep 3

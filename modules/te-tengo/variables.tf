@@ -141,7 +141,7 @@ variable "live_view_publish_cidrs" {
 # ----------------------------------------------------------------------------
 
 variable "dns_zone_name" {
-  description = "Existing public Route53 hosted zone (e.g. tetengo.tech). Empty skips Route53 and serves the app on <elastic-ip-with-dashes>.sslip.io."
+  description = "Existing public Route53 hosted zone (e.g. tetengo.tech). Empty (default) skips Route53: the name comes from app_hostname (record created by hand at the registrar) or <elastic-ip-with-dashes>.sslip.io."
   type        = string
   default     = ""
 }
@@ -155,6 +155,42 @@ variable "dns_record_name" {
 # ----------------------------------------------------------------------------
 # Storage
 # ----------------------------------------------------------------------------
+
+variable "app_hostname" {
+  description = "Public name of the API when dns_zone_name is empty: an A record created by hand at the DNS provider (e.g. api.tetengo.reqsai.tech). Empty serves the app on <elastic-ip-with-dashes>.sslip.io."
+  type        = string
+  default     = ""
+}
+
+variable "enable_s3_buckets" {
+  description = "Create the private S3 buckets for clips and backups and grant the instance role access. Off by default: storage lives in Cloudflare R2 (object_storage_endpoint, clips_bucket_name, backups_bucket_name)."
+  type        = bool
+  default     = false
+}
+
+variable "object_storage_endpoint" {
+  description = "S3 API endpoint of the external object store when enable_s3_buckets is false, e.g. https://<ACCOUNT_ID>.r2.cloudflarestorage.com. Written to the Ansible inventory; its keys go to the Ansible vault."
+  type        = string
+  default     = ""
+}
+
+variable "object_storage_region" {
+  description = "Signing region of the external object store ('auto' for Cloudflare R2). Ignored when enable_s3_buckets is true (the AWS region is used)."
+  type        = string
+  default     = "auto"
+}
+
+variable "clips_bucket_name" {
+  description = "External bucket of the fall clips when enable_s3_buckets is false."
+  type        = string
+  default     = ""
+}
+
+variable "backups_bucket_name" {
+  description = "External bucket of the database dumps when enable_s3_buckets is false."
+  type        = string
+  default     = ""
+}
 
 variable "clips_retention_days" {
   description = "Days after which fall clips expire in S3. Null keeps them: retention is a pending team decision (API: TT_RETENCION_CLIPS). Keep it at or above the API retention, as a backstop."
@@ -195,9 +231,9 @@ variable "force_destroy_buckets" {
 # ----------------------------------------------------------------------------
 
 variable "enable_ses" {
-  description = "Create the SES sender identities and grant the instance role ses:SendEmail on them."
+  description = "Create the SES sender identities and grant the instance role ses:SendEmail on them. Off by default: the API sends through an SMTP relay configured in Ansible."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "ses_sender_email" {

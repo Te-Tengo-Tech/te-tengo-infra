@@ -52,7 +52,7 @@ locals {
 
   use_route53    = var.dns_zone_name != ""
   sslip_hostname = "${replace(aws_eip.app.public_ip, ".", "-")}.sslip.io"
-  app_hostname   = local.use_route53 ? "${var.dns_record_name}.${var.dns_zone_name}" : local.sslip_hostname
+  app_hostname   = local.use_route53 ? "${var.dns_record_name}.${var.dns_zone_name}" : coalesce(var.app_hostname, local.sslip_hostname)
 
   ses_sender = var.enable_ses && var.ses_sender_email != "" ? "${var.ses_sender_name} <${var.ses_sender_email}>" : ""
 }

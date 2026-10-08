@@ -1,7 +1,8 @@
 ---
 # Memory budget per instance size (memory_profile in the Terraform inventory). Container limits are
 # caps, not reservations; the swap file absorbs short peaks (API start-up, pg_dump).
-# Terraform picks small (2 GiB or more) or micro; medium is for a manual upgrade.
+# envs/mvp (AWS) picks small (2 GiB or more) or micro; envs/oci picks from the A1 memory: large (6 GB
+# or more, the default 1 OCPU / 6 GB host), medium (4 GB), small (2 GB) or micro.
 te_tengo_memory_profiles:
   # t4g.micro, 1 GiB
   micro:
@@ -50,4 +51,23 @@ te_tengo_memory_profiles:
     postgres_effective_cache_size: 768MB
     postgres_work_mem: 8MB
     postgres_maintenance_work_mem: 64MB
+    postgres_max_connections: "40"
+  # OCI VM.Standard.A1.Flex with 1 OCPU and 6 GB (half of the tenancy's Always Free A1 allowance).
+  # Container caps add up to ~3.8 GB (postgres 1 GB, api 2 GB, mediamtx 512 MB, caddy 256 MB), leaving
+  # ~2 GB for the OS, Docker, the page cache that PostgreSQL relies on (effective_cache_size) and pg_dump.
+  # One OCPU is a single Ampere core: the serial collector avoids GC threads competing for it.
+  large:
+    swap_size_mb: 1024
+    postgres_mem_limit: 1024m
+    api_mem_limit: 2048m
+    mediamtx_mem_limit: 512m
+    caddy_mem_limit: 256m
+    api_java_opts: >-
+      -Xms384m -Xmx1280m -XX:MaxMetaspaceSize=256m -XX:ReservedCodeCacheSize=128m
+      -Xss512k -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError
+    db_pool_size: "12"
+    postgres_shared_buffers: 256MB
+    postgres_effective_cache_size: 1536MB
+    postgres_work_mem: 8MB
+    postgres_maintenance_work_mem: 128MB
     postgres_max_connections: "40"

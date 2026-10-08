@@ -1,4 +1,5 @@
-# Te Tengo MVP stack on one EC2 host (arm64): Caddy (TLS) -> API + MediaMTX, PostgreSQL behind.
+# Te Tengo stack on one arm64 host (OCI Ampere A1 VM; EC2 t4g on the AWS alternative):
+# Caddy (TLS) -> API + MediaMTX, PostgreSQL behind.
 # Ansible (role `app`) installs this file in /opt/te-tengo with a rendered `.env` (the variables
 # below) and `api.env` (the API's TT_ settings); see .env.example and api.env.example.
 # Every setting is required (`:?`) so a missing value stops `docker compose up` instead of starting
@@ -141,7 +142,7 @@ networks:
   # PostgreSQL only: no route out of the host.
   backend:
     internal: true
-  # Caddy, the API and MediaMTX; the API needs egress to S3, SES and Firebase.
+  # Caddy, the API and MediaMTX; the API needs egress to R2 (or S3), the SMTP relay (or SES) and Firebase.
   edge: {}
 
 volumes:

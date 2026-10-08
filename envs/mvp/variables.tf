@@ -51,6 +51,42 @@ variable "dns_record_name" {
   default     = "mvp"
 }
 
+variable "app_hostname" {
+  description = "Public name with an A record created by hand at the registrar (when dns_zone_name is empty); empty uses <ip>.sslip.io."
+  type        = string
+  default     = ""
+}
+
+variable "enable_s3_buckets" {
+  description = "Create S3 buckets for clips and backups (off: Cloudflare R2)."
+  type        = bool
+  default     = false
+}
+
+variable "object_storage_endpoint" {
+  description = "External S3-compatible endpoint when enable_s3_buckets is false (R2: https://<ACCOUNT_ID>.r2.cloudflarestorage.com)."
+  type        = string
+  default     = ""
+}
+
+variable "object_storage_region" {
+  description = "Signing region of the external store ('auto' for R2)."
+  type        = string
+  default     = "auto"
+}
+
+variable "clips_bucket_name" {
+  description = "External clips bucket when enable_s3_buckets is false."
+  type        = string
+  default     = "te-tengo-clips"
+}
+
+variable "backups_bucket_name" {
+  description = "External backups bucket when enable_s3_buckets is false."
+  type        = string
+  default     = "te-tengo-backups"
+}
+
 variable "clips_retention_days" {
   description = "Days before clips expire; null keeps them (pending team decision)."
   type        = number
@@ -69,9 +105,16 @@ variable "backups_retention_days" {
   default     = 30
 }
 
+variable "enable_ses" {
+  description = "Create SES identities (off: e-mail through an SMTP relay configured in Ansible)."
+  type        = bool
+  default     = false
+}
+
 variable "ses_sender_email" {
-  description = "Sender address of the API e-mails (verified by SES)."
+  description = "Sender address of the API e-mails (verified by SES); only with enable_ses."
   type        = string
+  default     = ""
 }
 
 variable "ses_sender_name" {

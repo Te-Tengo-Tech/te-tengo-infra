@@ -1,3 +1,4 @@
+# Optional (enable_ses, off by default: the API sends through an SMTP relay configured in Ansible).
 # Sender identities for the API's 'ses' e-mail provider (TT_SES_REMITENTE).
 # - The e-mail identity is verified by clicking the link SES sends to that address.
 # - The optional domain identity uses Easy DKIM; its three CNAMEs go to Route53 when the domain

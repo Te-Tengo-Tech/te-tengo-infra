@@ -1,24 +1,33 @@
 ---
-# Local test inventory: the same variables Terraform writes for the real host, pointing to the
-# tt-test-host container through the Docker connection (no SSH).
+# Local test inventory: the shape Terraform renders for the production VM (envs/oci,
+# docs/interface-terraform-ansible.md), pointing to the tt-test-host container over plain SSH. Floci's
+# S3 plays Cloudflare R2: endpoint, path style and static keys from the vault. The only difference is the
+# signing region: R2 takes "auto", Floci rejects it ("expecting a region AWS publishes"), so us-east-1.
 all:
   children:
     te_tengo:
       hosts:
         te-tengo-test:
-          ansible_connection: community.docker.docker
-          ansible_host: tt-test-host
+          ansible_host: 127.0.0.1
+          ansible_port: 18022
           ansible_user: ubuntu
+          ansible_connection: ssh
+          ansible_ssh_private_key_file: "{{ inventory_dir }}/.work/id_ed25519"
           ansible_python_interpreter: /usr/bin/python3
           # Terraform interface variables (docs/interface-terraform-ansible.md).
           app_hostname: localhost
           public_ip: 127.0.0.1
-          aws_region: us-east-1
+          cloud_provider: oci
+          cloud_region: local
           memory_profile: small
           instance_architecture: arm64
+          object_storage_endpoint: http://floci.test:4566
+          object_storage_region: us-east-1  # R2: auto
+          object_storage_path_style: true
+          object_storage_auth: static
           clips_s3_bucket: te-tengo-clips
           backup_s3_bucket: te-tengo-backups
-          ses_sender: "Te Tengo <no-responder@tetengo.test>"
+          ses_sender: ""
           push_provider: fcm  # overridden by test/vars.yml: registro, no Firebase key in the test
           sns_platform_application_arn: ""
           live_view_publish_port: 8322

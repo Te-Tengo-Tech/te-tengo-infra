@@ -36,6 +36,13 @@ module "te_tengo" {
   dns_zone_name   = var.enable_route53 ? "tetengo.test" : ""
   dns_record_name = "mvp"
 
+  # The emulator exercises every optional AWS path, including the ones envs/mvp leaves off.
+  enable_s3_buckets = var.enable_s3_buckets
+  # Used when enable_s3_buckets is false (the envs/mvp default): an external S3-compatible store,
+  # here the Floci of the Ansible test host (test/compose.yaml) standing in for Cloudflare R2.
+  object_storage_endpoint    = "http://floci.test:4566"
+  clips_bucket_name          = "te-tengo-clips"
+  backups_bucket_name        = "te-tengo-backups"
   clips_retention_days       = 30
   clips_cors_allowed_origins = ["http://localhost:8080"]
 

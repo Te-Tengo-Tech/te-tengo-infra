@@ -1,3 +1,8 @@
+# INACTIVE alternative: the same host on AWS (EC2 t4g.small). It is kept validated (and exercised
+# against the Floci emulator through envs/local) but has never been applied; production runs on
+# Oracle Cloud Always Free (envs/oci). By default it is "VM only": clips and backups live in
+# Cloudflare R2, e-mail goes through an SMTP relay and DNS is managed at the registrar; S3, SES, SNS
+# and Route53 can be switched back on with the enable_* / dns_zone_name variables.
 module "te_tengo" {
   source = "../../modules/te-tengo"
 
@@ -12,11 +17,19 @@ module "te_tengo" {
 
   dns_zone_name   = var.dns_zone_name
   dns_record_name = var.dns_record_name
+  app_hostname    = var.app_hostname
+
+  enable_s3_buckets       = var.enable_s3_buckets
+  object_storage_endpoint = var.object_storage_endpoint
+  object_storage_region   = var.object_storage_region
+  clips_bucket_name       = var.clips_bucket_name
+  backups_bucket_name     = var.backups_bucket_name
 
   clips_retention_days       = var.clips_retention_days
   clips_cors_allowed_origins = var.clips_cors_allowed_origins
   backups_retention_days     = var.backups_retention_days
 
+  enable_ses       = var.enable_ses
   ses_sender_email = var.ses_sender_email
   ses_sender_name  = var.ses_sender_name
   ses_domain       = var.ses_domain
