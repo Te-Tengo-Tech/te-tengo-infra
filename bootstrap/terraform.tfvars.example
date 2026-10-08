@@ -1,0 +1,4 @@
+aws_region = "us-east-1"
+# Null (default) names it te-tengo-terraform-state-<account-id>.
+# state_bucket_name = "te-tengo-terraform-state-123456789012"
+noncurrent_version_retention_days = 90
