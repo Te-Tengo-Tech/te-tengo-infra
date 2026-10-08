@@ -38,3 +38,9 @@ variable "enable_route53" {
   type        = bool
   default     = true
 }
+
+variable "enable_s3_buckets" {
+  description = "Create the clips and backups buckets in the emulator (off in envs/mvp, where storage is R2)."
+  type        = bool
+  default     = true
+}

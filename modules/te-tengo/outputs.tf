@@ -29,13 +29,13 @@ output "live_view_hls_base_url" {
 }
 
 output "clips_bucket" {
-  description = "Private S3 bucket of the fall clips (API TT_CLIPS_BUCKET)."
-  value       = aws_s3_bucket.this["clips"].id
+  description = "Bucket of the fall clips (API TT_CLIPS_BUCKET): the S3 bucket with enable_s3_buckets, else clips_bucket_name."
+  value       = local.clips_bucket
 }
 
 output "backups_bucket" {
-  description = "Private S3 bucket of the database dumps."
-  value       = aws_s3_bucket.this["backups"].id
+  description = "Bucket of the database dumps: the S3 bucket with enable_s3_buckets, else backups_bucket_name."
+  value       = local.backups_bucket
 }
 
 output "ses_sender" {
@@ -115,8 +115,12 @@ output "ansible_inventory" {
     aws_region                   = var.aws_region
     memory_profile               = local.memory_profile
     instance_architecture        = local.ami_architecture
-    clips_s3_bucket              = aws_s3_bucket.this["clips"].id
-    backup_s3_bucket             = aws_s3_bucket.this["backups"].id
+    object_storage_endpoint      = local.object_storage_endpoint
+    object_storage_region        = local.object_storage_region
+    object_storage_path_style    = local.object_storage_path_style
+    object_storage_auth          = local.object_storage_auth
+    clips_s3_bucket              = local.clips_bucket
+    backup_s3_bucket             = local.backups_bucket
     ses_sender                   = local.ses_sender
     push_provider                = var.enable_sns ? "sns" : "fcm"
     sns_platform_application_arn = var.enable_sns ? aws_sns_platform_application.fcm[0].arn : ""

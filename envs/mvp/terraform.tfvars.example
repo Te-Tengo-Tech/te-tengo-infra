@@ -1,4 +1,5 @@
-# Copy to terraform.tfvars (git-ignored) and fill in. Never put secrets here.
+# INACTIVE alternative to envs/oci (see envs/mvp/main.tf). Copy to terraform.tfvars (git-ignored)
+# and fill in. Never put secrets here.
 aws_region             = "us-east-1"
 environment            = "mvp"
 instance_type          = "t4g.small"
@@ -7,16 +8,26 @@ cpu_credits            = "standard"
 termination_protection = true
 ssh_public_key         = "ssh-ed25519 AAAA... deploy@te-tengo"
 
-# Empty: <elastic-ip-with-dashes>.sslip.io. Set an existing Route53 zone for mvp.<zone>.
+# Empty zone: app_hostname (A record by hand at the registrar) or <elastic-ip-with-dashes>.sslip.io.
 dns_zone_name   = ""
 dns_record_name = "mvp"
+app_hostname    = "api.tetengo.reqsai.tech"
 
-# null keeps clips until the team decides the retention (API TT_RETENCION_CLIPS).
+# Storage in Cloudflare R2 (keys in the Ansible vault). true creates S3 buckets instead.
+enable_s3_buckets       = false
+object_storage_endpoint = "https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
+object_storage_region   = "auto"
+clips_bucket_name       = "te-tengo-clips"
+backups_bucket_name     = "te-tengo-backups"
+
+# Only with enable_s3_buckets. null keeps clips until the team decides the retention (API TT_RETENCION_CLIPS).
 clips_retention_days       = null
 clips_cors_allowed_origins = []
 backups_retention_days     = 30
 
-ses_sender_email = "no-responder@example.com"
+# E-mail through an SMTP relay (Ansible). true creates SES identities instead.
+enable_ses       = false
+ses_sender_email = ""
 ses_sender_name  = "Te Tengo"
 ses_domain       = ""
 

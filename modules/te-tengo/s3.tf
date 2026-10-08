@@ -1,3 +1,4 @@
+# Optional (enable_s3_buckets, off by default: storage lives in Cloudflare R2).
 # Two private buckets with the same hardening:
 # - clips:   fall clips. The household agent uploads with a pre-signed PUT and the app plays them
 #            with a pre-signed GET (both signed by the API with the instance role), so the
@@ -7,10 +8,18 @@
 # Neither bucket is versioned: deleting a clip (consent revoked, retention) must really delete
 # it, and dumps already have their own retention. SSE-S3 (AES256) avoids KMS request charges.
 locals {
-  buckets = {
+  buckets = var.enable_s3_buckets ? {
     clips   = "${local.name}-clips-${local.account_id}"
     backups = "${local.name}-backups-${local.account_id}"
-  }
+  } : {}
+
+  # What the API and the backup job use: these buckets, or the external store's.
+  clips_bucket              = var.enable_s3_buckets ? aws_s3_bucket.this["clips"].id : var.clips_bucket_name
+  backups_bucket            = var.enable_s3_buckets ? aws_s3_bucket.this["backups"].id : var.backups_bucket_name
+  object_storage_auth       = var.enable_s3_buckets ? "instance_role" : "static"
+  object_storage_region     = var.enable_s3_buckets ? var.aws_region : var.object_storage_region
+  object_storage_endpoint   = var.enable_s3_buckets ? "" : trimsuffix(var.object_storage_endpoint, "/")
+  object_storage_path_style = !var.enable_s3_buckets
 }
 
 resource "aws_s3_bucket" "this" {
@@ -21,6 +30,7 @@ resource "aws_s3_bucket" "this" {
   # checkov:skip=CKV_AWS_145:SSE-S3 (AES256) is used on purpose; SSE-KMS bills every request.
   # checkov:skip=CKV_AWS_21:Not versioned on purpose: deleted clips must not survive as old versions (consent revocation), and dumps expire.
   # checkov:skip=CKV2_AWS_62:No consumer for S3 event notifications.
+  # checkov:skip=CKV2_AWS_61:Both buckets get a lifecycle configuration below; it is counted (enable_s3_buckets), which the check does not follow.
   bucket        = each.value
   force_destroy = var.force_destroy_buckets
 
@@ -98,6 +108,8 @@ resource "aws_s3_bucket_policy" "this" {
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "clips" {
+  count = var.enable_s3_buckets ? 1 : 0
+
   bucket = aws_s3_bucket.this["clips"].id
 
   rule {
@@ -122,6 +134,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "clips" {
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "backups" {
+  count = var.enable_s3_buckets ? 1 : 0
+
   bucket = aws_s3_bucket.this["backups"].id
 
   rule {
@@ -141,7 +155,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
 }
 
 resource "aws_s3_bucket_cors_configuration" "clips" {
-  count = length(var.clips_cors_allowed_origins) > 0 ? 1 : 0
+  count = var.enable_s3_buckets && length(var.clips_cors_allowed_origins) > 0 ? 1 : 0
 
   bucket = aws_s3_bucket.this["clips"].id
 
