@@ -1,0 +1,18 @@
+---
+# Local test inventory: the same variables Terraform writes for the real host
+# (docs/interface-terraform-ansible.md), pointing to the tt-test-host container.
+all:
+  children:
+    te_tengo:
+      hosts:
+        te-tengo-test:
+          ansible_connection: community.docker.docker
+          ansible_host: tt-test-host
+          ansible_user: ubuntu
+          ansible_python_interpreter: /usr/bin/python3
+          te_tengo_hostname: localhost
+          te_tengo_memory_profile: small
+          te_tengo_aws_region: us-east-1
+          te_tengo_clips_bucket: te-tengo-clips
+          te_tengo_backups_bucket: te-tengo-backups
+          te_tengo_ses_sender: "Te Tengo <no-responder@tetengo.test>"
