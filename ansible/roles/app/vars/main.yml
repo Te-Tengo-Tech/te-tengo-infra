@@ -44,6 +44,8 @@ app_api_env_core:
   SPRING_DATASOURCE_USERNAME: "{{ app_postgres_user }}"
   SPRING_DATASOURCE_PASSWORD: "{{ vault_postgres_password | default('') }}"
   SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "{{ app_profile.db_pool_size }}"
+  # glibc malloc arenas of the JVM (tiny profile only; empty values are not written).
+  MALLOC_ARENA_MAX: "{{ app_profile.api_malloc_arena_max | default('') }}"
   SPRINGDOC_API_DOCS_ENABLED: "false"
   SPRINGDOC_SWAGGER_UI_ENABLED: "false"
   TT_JWT_CLAVE_PUBLICA: "file:{{ app_secrets_mount }}/jwt-publica.pem"

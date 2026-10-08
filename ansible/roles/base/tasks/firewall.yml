@@ -1,5 +1,6 @@
 ---
-# Only on images with a persistent iptables policy that ends in REJECT (OCI platform images).
+# OCI hosts only (base_manage_oci_firewall), and only when the image's persistent iptables policy ends
+# in REJECT (Oracle's Ubuntu platform images).
 - name: Read the persistent iptables policy
   ansible.builtin.slurp:
     src: "{{ base_host_firewall_rules_file }}"

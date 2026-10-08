@@ -1,9 +1,37 @@
 ---
 # Memory budget per instance size (memory_profile in the Terraform inventory). Container limits are
-# caps, not reservations; the swap file absorbs short peaks (API start-up, pg_dump).
-# envs/mvp (AWS) picks small (2 GiB or more) or micro; envs/oci picks from the A1 memory: large (6 GB
-# or more, the default 1 OCPU / 6 GB host), medium (4 GB), small (2 GB) or micro.
+# caps, not reservations; the swap file absorbs short peaks (API start-up, pg_dump). Compose leaves
+# memswap_limit unset, so each container may also use swap up to its own mem_limit.
+# envs/azure picks from the VM size: tiny (1 GiB, the default Standard_B2ats_v2), small (2 GiB),
+# medium (4 GiB, Standard_B2als_v2) or large (6 GiB or more). envs/oci picks from the A1 memory: large
+# (6 GB or more), medium (4 GB), small (2 GB) or micro. envs/mvp (AWS) picks small (2 GiB or more) or micro.
 te_tengo_memory_profiles:
+  # Azure Standard_B2ats_v2 (2 vCPU, 1 GiB), the free size of the Azure for Students offer. Container
+  # caps add up to 848 MiB (api 560, postgres 144, mediamtx 80, caddy 64), leaving the rest of the GiB to
+  # Ubuntu, the Azure agent, dockerd and containerd; the 2 GiB swap file takes the overflow (API start-up,
+  # pg_dump). The JVM: 256 MiB heap, serial GC, C1 only (smaller code cache, less compiler memory),
+  # 256 KiB thread stacks (the API runs on virtual threads, so few platform threads exist), metaspace and
+  # direct memory capped, two glibc malloc arenas. Its native memory tracking on the test host committed
+  # about 450 MiB (heap 256, metaspace about 100, symbols, code cache, CDS), hence the 560 MiB cap.
+  # PostgreSQL: 32 MB shared_buffers and 15 connections (Hikari keeps 4, leaving room for pg_dump and an
+  # operator psql). Measured on the local test host limited to 1 GiB: docs/ansible.md.
+  tiny:
+    swap_size_mb: 2048
+    postgres_mem_limit: 144m
+    api_mem_limit: 560m
+    mediamtx_mem_limit: 80m
+    caddy_mem_limit: 64m
+    api_malloc_arena_max: "2"
+    api_java_opts: >-
+      -Xms96m -Xmx256m -XX:MaxMetaspaceSize=160m -XX:CompressedClassSpaceSize=48m
+      -XX:ReservedCodeCacheSize=40m -XX:MaxDirectMemorySize=64m -Xss256k -XX:+UseSerialGC
+      -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError
+    db_pool_size: "4"
+    postgres_shared_buffers: 32MB
+    postgres_effective_cache_size: 128MB
+    postgres_work_mem: 2MB
+    postgres_maintenance_work_mem: 16MB
+    postgres_max_connections: "15"
   # t4g.micro, 1 GiB
   micro:
     swap_size_mb: 2048
@@ -36,7 +64,7 @@ te_tengo_memory_profiles:
     postgres_work_mem: 4MB
     postgres_maintenance_work_mem: 32MB
     postgres_max_connections: "30"
-  # t4g.medium, 4 GiB
+  # t4g.medium or Azure Standard_B2als_v2, 4 GiB
   medium:
     swap_size_mb: 1024
     postgres_mem_limit: 768m

@@ -1,4 +1,5 @@
-# Te Tengo stack on one arm64 host (OCI Ampere A1 VM; EC2 t4g on the AWS alternative):
+# Te Tengo stack on one host (Azure x64 VM in production; OCI Ampere A1 or EC2 t4g, arm64, on the
+# inactive alternatives):
 # Caddy (TLS) -> API + MediaMTX, PostgreSQL behind.
 # Ansible (role `app`) installs this file in /opt/te-tengo with a rendered `.env` (the variables
 # below) and `api.env` (the API's TT_ settings); see .env.example and api.env.example.

@@ -21,13 +21,16 @@ base_journald_max_use: 200M
 base_automatic_reboot_time: "09:00"  # 04:00 in Lima
 # Extra public keys for the remote user, e.g. the GitHub Actions deploy key. Restrict them:
 # - AWS (SSH over SSM): 'from="127.0.0.1,::1",no-agent-forwarding,no-port-forwarding,no-X11-forwarding ssh-ed25519 AAAA... te-tengo-deploy'
-# - OCI (plain SSH): 'no-agent-forwarding,no-port-forwarding,no-X11-forwarding ssh-ed25519 AAAA... te-tengo-deploy'
+# - Azure or OCI (plain SSH): 'no-agent-forwarding,no-port-forwarding,no-X11-forwarding ssh-ed25519 AAAA... te-tengo-deploy'
 #   (add from="<runner address>" when the deploy runner has a fixed address).
 base_authorized_keys: "{{ te_tengo_authorized_keys | default([]) }}"
 # Oracle's Ubuntu platform images ship an iptables policy (/etc/iptables/rules.v4, loaded by
-# netfilter-persistent) that rejects every inbound connection except SSH. When that file exists, the
-# public ports of the stack are accepted before its REJECT rule, live and on reboot. Docker's own
-# rules handle the published container ports; these keep the host's INPUT chain consistent.
+# netfilter-persistent) that rejects every inbound connection except SSH. On OCI hosts, when that file
+# ends its INPUT chain in REJECT, the public ports of the stack are accepted before it, live and on
+# reboot. Docker's own rules handle the published container ports; these keep the host's INPUT chain
+# consistent. Canonical's Azure (and AWS) images carry no such policy: the network security group is
+# the firewall there, and these tasks are skipped.
+base_manage_oci_firewall: "{{ (te_tengo_cloud_provider | default('')) == 'oci' }}"
 base_host_firewall_rules_file: /etc/iptables/rules.v4
 base_host_firewall_ports:
   - { protocol: tcp, port: "80" }
