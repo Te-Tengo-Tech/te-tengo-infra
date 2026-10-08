@@ -22,3 +22,5 @@ compose/.env
 compose/api.env
 # Local test host: throwaway secrets, image archive, logs
 test/.work/
+# ansible-lint cache
+.ansible/
