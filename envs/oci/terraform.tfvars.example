@@ -1,0 +1,35 @@
+# Copy to terraform.tfvars (git-ignored) and fill in. Never put secrets here: the OCI API key lives in
+# ~/.oci/config, the R2 keys in the Ansible vault and in ~/.aws/credentials (state backend).
+
+# Home region of the tenancy, chosen when the account was created (cannot be changed later).
+region             = "sa-santiago-1" # or "sa-saopaulo-1"
+oci_config_profile = "DEFAULT"
+tenancy_ocid       = "ocid1.tenancy.oc1..<tenancy-id>"
+# null: the root compartment. A dedicated compartment is tidier: ocid1.compartment.oc1..<id>
+compartment_ocid = null
+
+environment = "prod"
+
+# Always Free Ampere A1: 2 OCPUs and 12 GB per tenancy; 200 GB of boot + block volumes in total.
+# The allowance is shared with another project's VM: half each.
+shape                      = "VM.Standard.A1.Flex"
+ocpus                      = 1
+memory_in_gbs              = 6
+boot_volume_size_in_gbs    = 50
+availability_domain_number = 1
+
+ssh_public_key = "ssh-ed25519 AAAA... operator@te-tengo"
+# Your public IPv4 as a /32 (curl -4 https://ifconfig.me). Port 22 is closed to everyone else.
+admin_cidrs = ["203.0.113.7/32"]
+
+# ephemeral: kept across stop/start, lost if the instance is terminated (then update the A record).
+public_ip_mode = "ephemeral"
+
+# A record at Namify: api.tetengo.reqsai.tech -> output public_ip. Empty: <ip-with-dashes>.sslip.io.
+app_hostname = "api.tetengo.reqsai.tech"
+
+# Cloudflare R2 (Dashboard > R2 > Overview: Account ID). Buckets are created by hand (docs/terraform.md).
+object_storage_endpoint = "https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
+object_storage_region   = "auto"
+clips_bucket_name       = "te-tengo-clips"
+backups_bucket_name     = "te-tengo-backups"

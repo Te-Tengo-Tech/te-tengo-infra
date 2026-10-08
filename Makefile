@@ -3,10 +3,13 @@ SHELL := /bin/bash
 
 # ----------------------------------------------------------------------------
 # Terraform (bootstrap/, envs/, modules/) — docs/terraform.md
+# Active environment: envs/oci (Oracle Cloud Always Free). envs/mvp (AWS) is an inactive alternative,
+# exercised only against the Floci emulator through envs/local.
 # ----------------------------------------------------------------------------
 
 TF              ?= terraform
-TF_DIRS         := bootstrap modules/te-tengo envs/mvp envs/local
+TF_DIRS         := bootstrap modules/te-tengo modules/te-tengo-oci envs/oci envs/mvp envs/local
+OCI_DIR         := envs/oci
 MVP_DIR         := envs/mvp
 LOCAL_DIR       := envs/local
 ANSIBLE_DIR     := ansible
@@ -28,9 +31,9 @@ LOCAL_ENV := env -u AWS_PROFILE -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u
 	HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1 \
 	TF_VAR_floci_endpoint=$(FLOCI_ENDPOINT) TF_IN_AUTOMATION=1
 
-.PHONY: help fmt fmt-check validate lint security check \
+.PHONY: help fmt fmt-check validate tf-test lint security check \
 	local-up local-down local-init local-plan local-apply local-destroy local-test \
-	inventory mvp-init mvp-plan
+	inventory oci-init oci-plan oci-apply mvp-init mvp-plan
 
 help: ## List the targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -48,6 +51,10 @@ validate: ## terraform validate every configuration (no backend, no AWS calls)
 		$(TF) -chdir=$$dir validate; \
 	done
 
+tf-test: ## terraform test of the OCI module with a mocked provider (no tenancy, no credentials)
+	$(TF) -chdir=modules/te-tengo-oci init -backend=false -input=false >/dev/null
+	$(TF) -chdir=modules/te-tengo-oci test
+
 lint: ## tflint (terraform + aws rulesets) through Docker
 	docker run --rm -v "$(CURDIR):/data" -w /data \
 		-v te-tengo-tflint-plugins:/plugins -e TFLINT_PLUGIN_DIR=/plugins \
@@ -57,7 +64,7 @@ lint: ## tflint (terraform + aws rulesets) through Docker
 security: ## checkov static analysis through Docker
 	docker run --rm -v "$(CURDIR):/data" -w /data $(CHECKOV_IMAGE) -d /data --config-file /data/.checkov.yaml
 
-check: fmt-check validate lint security ## Every static check
+check: fmt-check validate tf-test lint security ## Every static check
 
 local-up: ## Start the Floci emulator on $(FLOCI_PORT) and wait until it is healthy
 	@if ! docker inspect -f '{{.State.Running}}' $(FLOCI_CONTAINER) 2>/dev/null | grep -q true; then \
@@ -76,27 +83,50 @@ local-down: ## Stop Floci (its state is in memory, so this wipes it) and remove 
 local-init:
 	$(TF) -chdir=$(LOCAL_DIR) init -input=false >/dev/null
 
-local-plan: local-init ## Plan envs/local against Floci
-	$(LOCAL_ENV) $(TF) -chdir=$(LOCAL_DIR) plan -input=false -out=tfplan
+local-plan: local-init ## Plan envs/local against Floci (LOCAL_TF_ARGS="-var ..." to change the toggles)
+	$(LOCAL_ENV) $(TF) -chdir=$(LOCAL_DIR) plan -input=false -out=tfplan $(LOCAL_TF_ARGS)
 
 local-apply: local-plan ## Apply envs/local against Floci
 	$(LOCAL_ENV) $(TF) -chdir=$(LOCAL_DIR) apply -input=false tfplan
 	@rm -f $(LOCAL_DIR)/tfplan
 
 local-destroy: local-init ## Destroy envs/local in Floci
-	$(LOCAL_ENV) $(TF) -chdir=$(LOCAL_DIR) destroy -input=false -auto-approve
+	$(LOCAL_ENV) $(TF) -chdir=$(LOCAL_DIR) destroy -input=false -auto-approve $(LOCAL_TF_ARGS)
 
 local-test: local-up local-apply local-destroy ## Floci round trip: up, apply, destroy
 
-inventory: ## Write ansible/inventory/hosts.yml from the envs/mvp outputs (ENV_DIR=envs/local for the emulator)
+inventory: ## Write ansible/inventory/hosts.yml from the envs/oci outputs (ENV_DIR=envs/mvp or envs/local for the others)
 	@mkdir -p $(ANSIBLE_DIR)/inventory
-	$(TF) -chdir=$(or $(ENV_DIR),$(MVP_DIR)) output -raw ansible_inventory > $(ANSIBLE_DIR)/inventory/hosts.yml
+	$(TF) -chdir=$(or $(ENV_DIR),$(OCI_DIR)) output -raw ansible_inventory > $(ANSIBLE_DIR)/inventory/hosts.yml
 	@echo "Wrote $(ANSIBLE_DIR)/inventory/hosts.yml"
 
-mvp-init: ## Init envs/mvp with the S3 backend (needs envs/mvp/backend.hcl and real AWS credentials)
+# Applies are for an operator at a terminal, never for CI: CI only formats, validates, tests and lints
+# (terraform init -backend=false, no cloud credentials), at most plans, and the apply targets refuse to
+# run where CI or GITHUB_ACTIONS is set.
+NOT_IN_CI = @if [ -n "$$CI" ] || [ -n "$$GITHUB_ACTIONS" ]; then \
+	echo "Refusing to run '$@' in CI: applies of real environments are run by an operator (docs/terraform.md)." >&2; exit 1; fi
+
+oci-init: ## Init envs/oci: R2 state with envs/oci/backend.hcl, or local state with envs/oci/backend_override.tf
+	@if [ -f $(OCI_DIR)/backend_override.tf ]; then \
+		$(TF) -chdir=$(OCI_DIR) init -input=false; \
+	else \
+		test -f $(OCI_DIR)/backend.hcl || { echo "Copy $(OCI_DIR)/backend.hcl.example to backend.hcl (or create backend_override.tf for local state)" >&2; exit 1; }; \
+		$(TF) -chdir=$(OCI_DIR) init -input=false -backend-config=backend.hcl; \
+	fi
+
+oci-plan: ## Plan envs/oci (real OCI tenancy; review before oci-apply, see docs/terraform.md)
+	$(TF) -chdir=$(OCI_DIR) plan -input=false -out=tfplan
+
+oci-apply: ## Apply the reviewed envs/oci plan (operator only; refuses to run in CI)
+	$(NOT_IN_CI)
+	@test -f $(OCI_DIR)/tfplan || { echo "Run make oci-plan first and review it" >&2; exit 1; }
+	$(TF) -chdir=$(OCI_DIR) apply -input=false tfplan
+	@rm -f $(OCI_DIR)/tfplan
+
+mvp-init: ## INACTIVE AWS alternative: init envs/mvp with the S3 backend (needs envs/mvp/backend.hcl and AWS credentials)
 	$(TF) -chdir=$(MVP_DIR) init -input=false -backend-config=backend.hcl
 
-mvp-plan: ## Plan envs/mvp (real AWS; review before any apply, see docs/terraform.md)
+mvp-plan: ## INACTIVE AWS alternative: plan envs/mvp (real AWS; see docs/terraform.md)
 	$(TF) -chdir=$(MVP_DIR) plan -input=false -out=tfplan
 
 # ----------------------------------------------------------------------------
