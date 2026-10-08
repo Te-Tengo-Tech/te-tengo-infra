@@ -5,10 +5,11 @@ Infrastructure for **Te Tengo**: create the AWS resources, configure the server 
 | Folder | Tool | Will contain |
 |---|---|---|
 | `terraform/` | Terraform | VPC, subnets, security groups, EC2, RDS for PostgreSQL, encrypted S3 clip bucket, S3 VPC endpoint, SNS and least-privilege IAM |
-| `ansible/` | Ansible | Install Docker and Nginx with a TLS certificate, and deploy `compose/` on the EC2 instance |
-| `compose/` | Docker Compose | Production reverse proxy and `te-tengo-general-api`. With video processed on the household PC (ADR 0007 in the desktop agent repository), there is **no detection container** |
+| `ansible/` | Ansible | Configure the EC2 host (updates, swap, Docker), deploy `compose/` and schedule PostgreSQL backups to S3 ([docs/ansible.md](docs/ansible.md)) |
+| `compose/` | Docker Compose | Caddy (TLS), `te-tengo-general-api`, PostgreSQL 18 and MediaMTX (live view). With video processed on the household PC (ADR 0007 in the desktop agent repository), there is **no detection container** |
+| `test/` | Docker | Local stand-in for the EC2 host (Ubuntu 24.04 + systemd) and Floci: `make test-all` deploys and smoke-tests the stack without AWS |
 
-**Status:** initial structure; not implemented yet.
+**Deploying:** [docs/deploy.md](docs/deploy.md) (runbook, secrets, rollback).
 
 **Reference:** the physical architecture lives in `04-arquitectura/` of `Te-Tengo-Tech/docs` (Spanish). It must be updated for processing on the household PC.
 
