@@ -1,0 +1,9 @@
+# Repository-wide checkov settings (`make security`). Per-resource exceptions live next to the
+# resource as `# checkov:skip=<id>:<reason>` comments.
+framework:
+  - terraform
+compact: true
+quiet: true
+download-external-modules: false
+skip-path:
+  - .terraform

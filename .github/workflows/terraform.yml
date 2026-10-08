@@ -1,0 +1,134 @@
+name: Terraform
+
+on:
+  pull_request:
+    paths:
+      - bootstrap/**
+      - envs/**
+      - modules/**
+      - .tflint.hcl
+      - .checkov.yaml
+      - Makefile
+      - .github/workflows/terraform.yml
+  push:
+    branches: [develop, main]
+    paths:
+      - bootstrap/**
+      - envs/**
+      - modules/**
+      - .tflint.hcl
+      - .checkov.yaml
+      - Makefile
+      - .github/workflows/terraform.yml
+  workflow_dispatch:
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  TF_VERSION: 1.16.3
+  TF_IN_AUTOMATION: "1"
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
+
+jobs:
+  static:
+    name: fmt, validate, tflint, checkov
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Create the provider cache
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - name: terraform fmt
+        run: make fmt-check
+
+      - name: terraform validate
+        run: make validate
+
+      - name: tflint
+        run: make lint
+
+      - name: checkov
+        run: make security
+
+  floci:
+    name: Apply and destroy against Floci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      floci:
+        image: floci/floci:2.2.0
+        ports:
+          - 4566:4566
+        env:
+          FLOCI_SERVICES_ECS_RECONCILE_CONTAINERS_ON_STARTUP: "false"
+    env:
+      FLOCI_ENDPOINT: http://localhost:4566
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Create the provider cache
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - name: Wait for Floci
+        run: |
+          for i in $(seq 1 60); do
+            curl -fsS -o /dev/null "$FLOCI_ENDPOINT/_localstack/health" && exit 0
+            sleep 1
+          done
+          echo "::error::Floci did not become healthy"
+          exit 1
+
+      - name: Apply envs/local
+        run: make local-apply FLOCI_ENDPOINT="$FLOCI_ENDPOINT"
+
+      - name: Check the rendered Ansible inventory
+        run: |
+          terraform -chdir=envs/local output -raw ansible_inventory > "$RUNNER_TEMP/hosts.yml"
+          python3 - "$RUNNER_TEMP/hosts.yml" <<'EOF'
+          import sys, yaml
+          inventory = yaml.safe_load(open(sys.argv[1]))
+          hosts = inventory["all"]["children"]["te_tengo"]["hosts"]
+          (name, host), = hosts.items()
+          required = ["ansible_host", "ansible_user", "ansible_connection", "app_hostname", "aws_region",
+                      "memory_profile", "instance_architecture", "clips_s3_bucket", "backup_s3_bucket",
+                      "ses_sender", "push_provider", "live_view_publish_port"]
+          missing = [key for key in required if host.get(key) in (None, "")]
+          if missing:
+              sys.exit(f"{name}: missing {missing}")
+          print(f"{name}: {len(host)} variables, memory_profile={host['memory_profile']}")
+          EOF
+          {
+            echo "### Inventory rendered from Floci"
+            echo '```yaml'
+            cat "$RUNNER_TEMP/hosts.yml"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Destroy envs/local
+        if: always()
+        run: make local-destroy FLOCI_ENDPOINT="$FLOCI_ENDPOINT"

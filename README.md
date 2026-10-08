@@ -4,7 +4,7 @@ Infrastructure for **Te Tengo**: create the AWS resources, configure the server 
 
 | Folder | Tool | Will contain |
 |---|---|---|
-| `terraform/` | Terraform | VPC, subnets, security groups, EC2, RDS for PostgreSQL, encrypted S3 clip bucket, S3 VPC endpoint, SNS and least-privilege IAM |
+| `bootstrap/`, `envs/`, `modules/` | Terraform | One EC2 `t4g.small` with an Elastic IP in a minimal VPC, private S3 buckets for clips and backups, SES sender identity, least-privilege IAM and a GitHub OIDC deploy role; verified against the Floci emulator ([docs/terraform.md](docs/terraform.md)) |
 | `ansible/` | Ansible | Configure the EC2 host (updates, swap, Docker), deploy `compose/` and schedule PostgreSQL backups to S3 ([docs/ansible.md](docs/ansible.md)) |
 | `compose/` | Docker Compose | Caddy (TLS), `te-tengo-general-api`, PostgreSQL 18 and MediaMTX (live view). With video processed on the household PC (ADR 0007 in the desktop agent repository), there is **no detection container** |
 | `test/` | Docker | Local stand-in for the EC2 host (Ubuntu 24.04 + systemd) and Floci: `make test-all` deploys and smoke-tests the stack without AWS |
