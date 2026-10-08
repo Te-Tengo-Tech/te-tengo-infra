@@ -1,0 +1,21 @@
+---
+base_packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - jq
+  - python3-debian
+  - python3-requests
+  - python3-yaml
+  - unattended-upgrades
+  - unzip
+# Swap sized by the memory profile. Disable on hosts that must not touch the kernel's swap or
+# sysctl settings (the local test host is a container sharing Docker Desktop's kernel).
+base_manage_swap: true
+base_manage_sysctl: true
+base_swap_file: /swapfile
+base_swap_size_mb: "{{ te_tengo_memory_profiles[te_tengo_memory_profile].swap_size_mb }}"
+base_swappiness: 10
+base_journald_max_use: 200M
+# Reboot automatically at this time when an unattended upgrade needs it (kernel); "" to never reboot.
+base_automatic_reboot_time: "09:00"  # 04:00 in Lima

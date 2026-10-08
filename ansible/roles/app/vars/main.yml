@@ -1,0 +1,67 @@
+---
+app_profile: "{{ app_memory_profiles[app_memory_profile] }}"
+app_base_url: "https://{{ app_hostname }}{{ '' if app_https_port | string == '443' else ':' ~ app_https_port }}"
+# Where Caddy stores the site certificate (MediaMTX reads it for RTSPS).
+app_cert_dirs:
+  acme: acme-v02.api.letsencrypt.org-directory
+  internal: local
+app_cert_dir: "{{ app_cert_dirs[app_cert_issuer] | default('') }}"
+app_api_image_ref: >-
+  {{ app_api_repository ~ ':' ~ app_api_tag if app_api_source == 'registry' else app_api_local_image }}
+app_secrets_dir: "{{ app_dir }}/secrets"
+app_secrets_mount: /run/secrets/te-tengo
+
+app_compose_env:
+  TT_HOSTNAME: "{{ app_hostname }}"
+  ACME_EMAIL: "{{ app_acme_email if app_acme_email | length > 0 else 'ops@' ~ app_hostname }}"
+  CADDY_CERT_ISSUER: "{{ app_cert_issuer }}"
+  CADDY_CERT_DIR: "{{ app_cert_dir }}"
+  HTTP_PORT: "{{ app_http_port }}"
+  HTTPS_PORT: "{{ app_https_port }}"
+  RTSPS_PORT: "{{ app_rtsps_port }}"
+  API_IMAGE: "{{ app_api_image_ref | trim }}"
+  POSTGRES_IMAGE: "{{ app_postgres_image }}"
+  CADDY_IMAGE: "{{ app_caddy_image }}"
+  MEDIAMTX_IMAGE: "{{ app_mediamtx_image }}"
+  POSTGRES_DB: "{{ app_postgres_db }}"
+  POSTGRES_USER: "{{ app_postgres_user }}"
+  POSTGRES_PASSWORD: "{{ vault_postgres_password | default('') }}"
+  POSTGRES_SHARED_BUFFERS: "{{ app_profile.postgres_shared_buffers }}"
+  POSTGRES_EFFECTIVE_CACHE_SIZE: "{{ app_profile.postgres_effective_cache_size }}"
+  POSTGRES_WORK_MEM: "{{ app_profile.postgres_work_mem }}"
+  POSTGRES_MAINTENANCE_WORK_MEM: "{{ app_profile.postgres_maintenance_work_mem }}"
+  POSTGRES_MAX_CONNECTIONS: "{{ app_profile.postgres_max_connections }}"
+  POSTGRES_MEM_LIMIT: "{{ app_profile.postgres_mem_limit }}"
+  API_MEM_LIMIT: "{{ app_profile.api_mem_limit }}"
+  MEDIAMTX_MEM_LIMIT: "{{ app_profile.mediamtx_mem_limit }}"
+  CADDY_MEM_LIMIT: "{{ app_profile.caddy_mem_limit }}"
+  API_JAVA_OPTS: "{{ app_profile.api_java_opts }}"
+  MEDIAMTX_AUTH_SECRET: "{{ vault_mediamtx_auth_secret | default('') }}"
+
+app_api_env_core:
+  SERVER_FORWARD_HEADERS_STRATEGY: native
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/{{ app_postgres_db }}"
+  SPRING_DATASOURCE_USERNAME: "{{ app_postgres_user }}"
+  SPRING_DATASOURCE_PASSWORD: "{{ vault_postgres_password | default('') }}"
+  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "{{ app_profile.db_pool_size }}"
+  SPRINGDOC_API_DOCS_ENABLED: "false"
+  SPRINGDOC_SWAGGER_UI_ENABLED: "false"
+  TT_JWT_CLAVE_PUBLICA: "file:{{ app_secrets_mount }}/jwt-publica.pem"
+  TT_JWT_CLAVE_PRIVADA: "file:{{ app_secrets_mount }}/jwt-privada.pem"
+  TT_CLIPS_BUCKET: "{{ app_clips_bucket }}"
+  TT_CLIPS_REGION: "{{ app_aws_region }}"
+  TT_CORREO_PROVEEDOR: "{{ app_mail_provider }}"
+  TT_SES_REMITENTE: "{{ app_ses_sender }}"
+  TT_SES_REGION: "{{ app_aws_region }}"
+  TT_PUSH_PROVEEDOR: "{{ app_push_provider }}"
+  TT_FCM_CREDENCIALES: "{{ app_secrets_mount ~ '/fcm.json' if app_push_provider == 'fcm' else '' }}"
+  TT_URL_TRANSMISION: "wss://{{ app_base_url | regex_replace('^https://', '') }}"
+  TT_VIVO_URL_PUBLICACION: "rtsps://{{ app_hostname }}:{{ app_rtsps_port }}/camaras/{camaraId}"
+  TT_VIVO_URL_HLS: "{{ app_base_url }}/vivo"
+  TT_VIVO_MEDIAMTX_API: http://mediamtx:9997
+  TT_VIVO_SECRETO_AUTORIZACION: "{{ vault_mediamtx_auth_secret | default('') }}"
+
+app_api_env: "{{ app_api_env_core | combine(app_api_settings) }}"
+
+# build: temporary tarball of the API sources on the controller.
+app_api_build_tarball: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | regex_replace('/$', '') }}/te-tengo-general-api-src.tar.gz"

@@ -1,0 +1,6 @@
+# Managed by Ansible (role app). Do not edit on the host.
+{% for key, value in app_dotenv | dictsort %}
+{% if value | string | length > 0 %}
+{{ key }}='{{ value }}'
+{% endif %}
+{% endfor %}

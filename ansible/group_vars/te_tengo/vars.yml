@@ -1,0 +1,36 @@
+---
+# Settings shared by every Te Tengo host. Host-specific values (hostname, buckets, region, memory
+# profile, SES sender) come from the Terraform-generated inventory (docs/interface-terraform-ansible.md);
+# secrets come from vault.yml (see vault.yml.example).
+
+te_tengo_dir: /opt/te-tengo
+# Let's Encrypt account e-mail (expiry notices). Required.
+te_tengo_acme_email: ""
+
+# API image: published by te-tengo-general-api's release workflow. Pin a release or commit tag for
+# production deploys (`-e te_tengo_api_tag=...`).
+te_tengo_api_repository: ghcr.io/te-tengo-tech/te-tengo-general-api
+te_tengo_api_tag: latest
+# registry (pull te_tengo_api_repository:te_tengo_api_tag), archive (docker load a file from the
+# controller) or build (build on the host from a local checkout).
+te_tengo_api_source: registry
+# none (public package) or login (private package: te_tengo_registry_username + vault_registry_password,
+# a token with read:packages).
+te_tengo_registry_auth: none
+te_tengo_registry_username: ""
+
+te_tengo_postgres_image: postgres:18
+te_tengo_caddy_image: caddy:2.11-alpine
+te_tengo_mediamtx_image: bluenviron/mediamtx:1.21.1
+
+# Providers of the API (docs/NOTIFICATIONS.md of te-tengo-general-api).
+te_tengo_push_provider: fcm
+te_tengo_mail_provider: ses
+
+# Extra API settings merged last into api.env (e.g. TT_RETENCION_CLIPS, TT_AGENTE_VERSION_PUBLICADA).
+te_tengo_api_settings: {}
+
+# Daily PostgreSQL dump to te_tengo_backups_bucket.
+te_tengo_backup_enabled: true
+te_tengo_backup_on_calendar: "*-*-* 08:30:00"  # 03:30 in Lima (UTC-5)
+te_tengo_backup_keep_local: 7

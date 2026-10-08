@@ -1,0 +1,93 @@
+---
+- name: Create the backup directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ backup_dir }}"
+    - /etc/te-tengo
+
+- name: Install the AWS CLI for off-host copies
+  when: backup_s3_bucket | length > 0
+  block:
+    - name: Check for the AWS CLI
+      ansible.builtin.stat:
+        path: /usr/local/bin/aws
+      register: backup_awscli
+
+    - name: Download the AWS CLI v2 installer
+      ansible.builtin.get_url:
+        url: "{{ backup_awscli_url }}"
+        dest: /tmp/awscliv2.zip
+        mode: "0600"
+      when: not backup_awscli.stat.exists
+
+    - name: Unpack the AWS CLI v2 installer
+      ansible.builtin.unarchive:
+        src: /tmp/awscliv2.zip
+        dest: /tmp
+        remote_src: true
+      when: not backup_awscli.stat.exists
+
+    - name: Install the AWS CLI v2
+      ansible.builtin.command:
+        cmd: /tmp/aws/install --update
+        creates: /usr/local/bin/aws
+      when: not backup_awscli.stat.exists
+
+    - name: Remove the AWS CLI installer
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/awscliv2.zip
+        - /tmp/aws
+
+- name: Write the backup environment
+  ansible.builtin.copy:
+    dest: /etc/te-tengo/backup.env
+    content: |
+      # Managed by Ansible (role backup).
+      AWS_DEFAULT_REGION={{ backup_aws_region }}
+      {% for key, value in backup_aws_env | dictsort %}
+      {{ key }}={{ value }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install the backup and restore scripts
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /usr/local/sbin/{{ item }}
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - te-tengo-backup
+    - te-tengo-restore
+
+- name: Install the backup systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - te-tengo-backup.service
+    - te-tengo-backup.timer
+  notify: Reload systemd
+
+- name: Flush handlers before enabling the timer
+  ansible.builtin.meta: flush_handlers
+
+- name: Schedule the daily backup
+  ansible.builtin.systemd_service:
+    name: te-tengo-backup.timer
+    enabled: "{{ backup_enabled | bool }}"
+    state: "{{ 'started' if backup_enabled | bool else 'stopped' }}"

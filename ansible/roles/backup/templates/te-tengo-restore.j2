@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Managed by Ansible (role backup). Restores a dump made by te-tengo-backup, replacing the database.
+#   te-tengo-restore {{ backup_dir }}/te-tengo-20261007T083000Z.dump
+#   te-tengo-restore s3://{{ backup_s3_bucket | default('bucket', true) }}/{{ backup_s3_prefix }}/te-tengo-20261007T083000Z.dump
+#   te-tengo-restore latest        (newest dump in S3, or on the host without a bucket)
+set -euo pipefail
+umask 077
+
+source="${1:?usage: te-tengo-restore <path/to/file.dump | s3://bucket/key.dump | latest>}"
+
+set -a
+# shellcheck disable=SC1091
+. /etc/te-tengo/backup.env
+set +a
+aws_s3() {
+  /usr/local/bin/aws s3 "$@" --region {{ backup_aws_region }}{% if backup_s3_endpoint | length > 0 %} --endpoint-url {{ backup_s3_endpoint }}{% endif %}
+}
+
+cd {{ backup_app_dir }}
+
+if [[ "${source}" == latest ]]; then
+{% if backup_s3_bucket | length > 0 %}
+  key="$(aws_s3 ls "s3://{{ backup_s3_bucket }}/{{ backup_s3_prefix }}/" | awk '{print $4}' | grep '^te-tengo-.*\.dump$' | sort | tail -n1)"
+  [[ -n "${key}" ]] || { echo "No dump in s3://{{ backup_s3_bucket }}/{{ backup_s3_prefix }}/" >&2; exit 1; }
+  source="s3://{{ backup_s3_bucket }}/{{ backup_s3_prefix }}/${key}"
+{% else %}
+  source="$(ls -1 {{ backup_dir }}/te-tengo-*.dump | sort | tail -n1)"
+{% endif %}
+fi
+
+if [[ "${source}" == s3://* ]]; then
+  dump="{{ backup_dir }}/restore-$(date -u +%Y%m%dT%H%M%SZ).dump"
+  aws_s3 cp "${source}" "${dump}" --only-show-errors
+else
+  dump="${source}"
+fi
+
+[[ -s "${dump}" ]] || { echo "Dump not found or empty: ${dump}" >&2; exit 1; }
+echo "Restoring ${source}"
+
+docker compose stop api
+docker compose exec -T postgres sh -c 'dropdb --username="$POSTGRES_USER" --if-exists --force "$POSTGRES_DB" && createdb --username="$POSTGRES_USER" "$POSTGRES_DB"'
+docker compose exec -T postgres sh -c 'pg_restore --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --no-owner --no-privileges --exit-on-error' < "${dump}"
+docker compose start api
+echo "Restored ${dump}; the API is starting again (docker compose ps api)."

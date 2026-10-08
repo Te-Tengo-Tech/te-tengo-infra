@@ -1,0 +1,217 @@
+---
+- name: Validate required settings
+  ansible.builtin.assert:
+    that:
+      - app_hostname | length > 0
+      - app_hostname is match('^[A-Za-z0-9.-]+$')
+      - app_cert_issuer in app_cert_dirs
+      - app_cert_issuer != 'acme' or app_acme_email | length > 0
+      - app_memory_profile in app_memory_profiles
+      - app_api_source in ['registry', 'archive', 'build']
+      - app_registry_auth in ['none', 'login']
+      - app_aws_region | length > 0
+      - app_clips_bucket | length > 0
+      - app_mail_provider in ['ses', 'registro']
+      - app_mail_provider != 'ses' or app_ses_sender | length > 0
+      - app_push_provider in ['fcm', 'sns', 'registro']
+    fail_msg: >-
+      Missing or invalid settings. From the Terraform inventory: te_tengo_hostname, te_tengo_aws_region,
+      te_tengo_clips_bucket, te_tengo_ses_sender (with SES) and te_tengo_memory_profile (one of
+      {{ app_memory_profiles.keys() | join(', ') }}). From group_vars/te_tengo/vars.yml: te_tengo_acme_email,
+      te_tengo_api_source (registry, archive or build), te_tengo_registry_auth (none or login),
+      te_tengo_push_provider (fcm, sns or registro), te_tengo_mail_provider (ses or registro).
+    quiet: true
+
+- name: Validate the vault
+  ansible.builtin.assert:
+    that:
+      - vault_postgres_password | default('') | length >= 16
+      - "'BEGIN PRIVATE KEY' in vault_jwt_private_key_pem | default('')"
+      - vault_jwt_private_key_pem | default('') | length > 1000
+      - "'BEGIN PUBLIC KEY' in vault_jwt_public_key_pem | default('')"
+      - vault_jwt_public_key_pem | default('') | length > 200
+      - vault_mediamtx_auth_secret | default('') | length >= 32
+      - vault_mediamtx_auth_secret | default('') is match('^[A-Za-z0-9_-]+$')
+    fail_msg: >-
+      Invalid vault: vault_postgres_password (16+ characters), vault_jwt_private_key_pem (PKCS#8 PEM),
+      vault_jwt_public_key_pem (X.509 PEM) and vault_mediamtx_auth_secret (32+ URL-safe characters,
+      e.g. openssl rand -hex 32) are required. See group_vars/te_tengo/vault.yml.example.
+    quiet: true
+
+- name: Validate the Firebase key
+  ansible.builtin.assert:
+    that:
+      - vault_fcm_credentials_json | default('') | length > 0
+      - (vault_fcm_credentials_json | from_json).type | default('') == 'service_account'
+    fail_msg: te_tengo_push_provider is fcm but vault_fcm_credentials_json is not a Firebase service-account JSON key.
+    quiet: true
+  when: app_push_provider == 'fcm'
+
+- name: Validate registry credentials
+  ansible.builtin.assert:
+    that:
+      - app_registry_username | length > 0
+      - vault_registry_password | default('') | length > 0
+    fail_msg: te_tengo_registry_auth is login but te_tengo_registry_username or vault_registry_password is empty.
+    quiet: true
+  when: app_api_source == 'registry' and app_registry_auth == 'login'
+
+- name: Validate the image source
+  ansible.builtin.assert:
+    that:
+      - app_api_source != 'archive' or app_api_archive is file
+      - app_api_source != 'build' or (app_api_build_src ~ '/.git') is exists
+    fail_msg: >-
+      te_tengo_api_archive must be an existing `docker save` file (archive), or te_tengo_api_build_src a git
+      checkout of te-tengo-general-api (build), on the machine that runs Ansible.
+    quiet: true
+
+- name: Reject values the env files cannot hold
+  ansible.builtin.assert:
+    that:
+      - app_unsafe_env_keys | length == 0
+    fail_msg: "These settings contain a single quote or a line break: {{ app_unsafe_env_keys | join(', ') }}"
+    quiet: true
+  vars:
+    app_unsafe_env_keys: >-
+      {{ app_compose_env | combine(app_api_env) | dict2items
+         | selectattr('value', 'search', "['\n\r]") | map(attribute='key') | list }}
+
+- name: Inspect the current deployment
+  ansible.builtin.stat:
+    path: "{{ app_dir }}/compose.yaml"
+    get_checksum: false
+  register: app_compose_file
+
+- name: Remember whether the stack was already deployed (handlers only restart a running stack)
+  ansible.builtin.set_fact:
+    app_stack_existed: "{{ app_compose_file.stat.exists }}"
+
+- name: Create the application directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.owner | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ app_dir }}", mode: "0750" }
+    - { path: "{{ app_dir }}/caddy", mode: "0755" }
+    - { path: "{{ app_dir }}/mediamtx", mode: "0755" }
+    - { path: "{{ app_secrets_dir }}", mode: "0700", owner: "{{ app_api_uid }}" }
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Install the Compose file
+  ansible.builtin.copy:
+    src: "{{ app_compose_src_dir }}/compose.yaml"
+    dest: "{{ app_dir }}/compose.yaml"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Install the Caddyfile
+  ansible.builtin.copy:
+    src: "{{ app_compose_src_dir }}/caddy/Caddyfile"
+    dest: "{{ app_dir }}/caddy/Caddyfile"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload caddy
+
+- name: Install the MediaMTX configuration
+  ansible.builtin.copy:
+    src: "{{ app_compose_src_dir }}/mediamtx/mediamtx.yml"
+    dest: "{{ app_dir }}/mediamtx/mediamtx.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart mediamtx
+
+- name: Render the Compose environment file
+  ansible.builtin.template:
+    src: dotenv.j2
+    dest: "{{ app_dir }}/.env"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    app_dotenv: "{{ app_compose_env }}"
+  no_log: true
+
+- name: Render the API environment file
+  ansible.builtin.template:
+    src: dotenv.j2
+    dest: "{{ app_dir }}/api.env"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    app_dotenv: "{{ app_api_env }}"
+  no_log: true
+
+- name: Write the JWT keys
+  ansible.builtin.copy:
+    content: "{{ item.content | trim }}\n"
+    dest: "{{ app_secrets_dir }}/{{ item.name }}"
+    owner: "{{ app_api_uid }}"
+    group: "{{ app_api_uid }}"
+    mode: "0600"
+  loop:
+    - { name: jwt-privada.pem, content: "{{ vault_jwt_private_key_pem }}" }
+    - { name: jwt-publica.pem, content: "{{ vault_jwt_public_key_pem }}" }
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  notify: Restart api
+
+- name: Write the Firebase service-account key
+  ansible.builtin.copy:
+    content: "{{ vault_fcm_credentials_json | trim }}\n"
+    dest: "{{ app_secrets_dir }}/fcm.json"
+    owner: "{{ app_api_uid }}"
+    group: "{{ app_api_uid }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart api
+  when: app_push_provider == 'fcm'
+
+- name: Remove the Firebase key when FCM is not used
+  ansible.builtin.file:
+    path: "{{ app_secrets_dir }}/fcm.json"
+    state: absent
+  when: app_push_provider != 'fcm'
+
+- name: Log in to the container registry
+  ansible.builtin.include_tasks: registry.yml
+  when: app_api_source == 'registry' and app_registry_auth == 'login'
+
+- name: Load the API image from an archive
+  ansible.builtin.include_tasks: archive.yml
+  when: app_api_source == 'archive'
+
+- name: Build the API image on the host
+  ansible.builtin.include_tasks: build.yml
+  when: app_api_source == 'build'
+
+- name: Start or update the stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ app_dir }}"
+    state: present
+    pull: "{{ 'always' if app_api_source == 'registry' else 'missing' }}"
+    remove_orphans: true
+    wait: true
+    wait_timeout: "{{ app_compose_wait_timeout }}"
+
+- name: Remove dangling images
+  ansible.builtin.command:
+    cmd: docker image prune --force
+  register: app_prune
+  changed_when: "'Total reclaimed space: 0B' not in app_prune.stdout"
+
+- name: Apply configuration changes to the running stack
+  ansible.builtin.meta: flush_handlers
+
+- name: Check the deployment over HTTPS
+  ansible.builtin.include_tasks: verify.yml
+  when: app_verify | bool
