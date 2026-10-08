@@ -1,13 +1,32 @@
 #!/usr/bin/env bash
-# Prepares the local test after `docker compose up`: throwaway secrets (test/.work/vault.yml, never
-# real ones) and the S3 buckets that Terraform creates in AWS, created here in Floci.
+# Prepares the local test after `docker compose up`: a throwaway SSH key authorized for `ubuntu` on the
+# test host and its host key pinned in test/.work/known_hosts (what Terraform's ssh_public_key and the
+# operator's first verified connection do for the real VM), throwaway secrets (test/.work/vault.yml,
+# never real ones) and the two buckets, created in Floci as they are created by hand in Cloudflare R2.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 FLOCI="${TT_TEST_FLOCI:-http://127.0.0.1:34566}"
+HOST=tt-test-host
+SSH_PORT="${TT_TEST_SSH_PORT:-18022}"
 WORK=.work
 mkdir -p "$WORK"
 umask 077
+
+# SSH: the key Ansible uses (test/inventory.yml) and the pinned host key (StrictHostKeyChecking=yes).
+[ -s "$WORK/id_ed25519" ] || ssh-keygen -q -t ed25519 -N '' -C 'ansible@te-tengo-test' -f "$WORK/id_ed25519"
+docker exec -i "$HOST" sh -c 'install -d -m 700 -o ubuntu -g ubuntu /home/ubuntu/.ssh &&
+  cat > /home/ubuntu/.ssh/authorized_keys && chown ubuntu:ubuntu /home/ubuntu/.ssh/authorized_keys &&
+  chmod 600 /home/ubuntu/.ssh/authorized_keys' < "$WORK/id_ed25519.pub"
+for _ in $(seq 1 30); do
+  docker exec "$HOST" systemctl is-active --quiet ssh && break
+  sleep 1
+done
+host_key=$(docker exec "$HOST" cat /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f1,2)
+echo "[127.0.0.1]:$SSH_PORT $host_key" > "$WORK/known_hosts"
+ssh -i "$WORK/id_ed25519" -p "$SSH_PORT" -o UserKnownHostsFile="$WORK/known_hosts" -o StrictHostKeyChecking=yes \
+  -o BatchMode=yes -o ConnectTimeout=10 ubuntu@127.0.0.1 true
+echo "SSH to ubuntu@127.0.0.1:$SSH_PORT works with the pinned host key"
 
 if [ ! -s "$WORK/vault.yml" ]; then
   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$WORK/jwt-privada.pem" 2>/dev/null
@@ -18,6 +37,13 @@ if [ ! -s "$WORK/vault.yml" ]; then
     echo "vault_mediamtx_auth_secret: \"$(openssl rand -hex 32)\""
     echo "vault_fcm_credentials_json: \"\""
     echo "vault_registry_password: \"\""
+    echo "# Floci's built-in keys stand in for the R2 API tokens (Floci verifies the signatures)."
+    echo "vault_clips_s3_access_key_id: test"
+    echo "vault_clips_s3_secret_access_key: test"
+    echo "vault_backup_s3_access_key_id: test"
+    echo "vault_backup_s3_secret_access_key: test"
+    echo "vault_smtp_username: \"\""
+    echo "vault_smtp_password: \"\""
     echo "vault_jwt_private_key_pem: |"
     sed 's/^/  /' "$WORK/jwt-privada.pem"
     echo "vault_jwt_public_key_pem: |"
@@ -27,7 +53,8 @@ if [ ! -s "$WORK/vault.yml" ]; then
   echo "Wrote throwaway secrets to test/$WORK/vault.yml"
 fi
 
-# Buckets (signed with Floci's built-in test/test keys; Floci verifies signatures).
+# Buckets (signed with Floci's built-in test/test keys; Floci verifies signatures). In production they
+# are created by hand in Cloudflare R2 (docs/terraform.md).
 for bucket in te-tengo-clips te-tengo-backups; do
   code=$(curl -sS -o /dev/null -w '%{http_code}' --aws-sigv4 "aws:amz:us-east-1:s3" --user test:test \
     -X PUT "$FLOCI/$bucket")

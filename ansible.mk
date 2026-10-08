@@ -10,8 +10,11 @@ ANSIBLE_ARGS    ?=
 # Local te-tengo-general-api checkout the test image is built from.
 TT_API_SRC      ?= $(abspath ../te-tengo-general-api)
 TEST_COMPOSE    := docker compose -f test/compose.yaml
-TEST_PLAYBOOK   := cd $(ANSIBLE_DIR) && ansible-playbook site.yml -i ../test/inventory.yml \
-	-e @../test/vars.yml -e @../test/.work/vault.yml
+# The test host is reached over SSH like the production VM, with its host key pinned (test/prepare.sh).
+TEST_SSH_ARGS   := -o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=30 \
+	-o StrictHostKeyChecking=yes -o UserKnownHostsFile=$(CURDIR)/test/.work/known_hosts
+TEST_PLAYBOOK   := cd $(ANSIBLE_DIR) && ANSIBLE_SSH_ARGS="$(TEST_SSH_ARGS)" ansible-playbook site.yml \
+	-i ../test/inventory.yml -e @../test/vars.yml -e @../test/.work/vault.yml
 
 .PHONY: galaxy ansible-lint yamllint compose-config ansible-check deploy redeploy backup-now \
 	test-host-up test-image test-deploy test-smoke test-down test-all
@@ -46,9 +49,9 @@ backup-now: ## Run the backup job on the host now
 	cd $(ANSIBLE_DIR) && ansible te_tengo --become -m ansible.builtin.systemd_service \
 		-a "name=te-tengo-backup.service state=started" $(VAULT_ARGS)
 
-# --- Local test host (no AWS) -------------------------------------------------
+# --- Local test host (no cloud account) ----------------------------------------
 
-test-host-up: ## Start the test host (Ubuntu 24.04 + systemd) and Floci, then throwaway secrets and buckets
+test-host-up: ## Start the test host (Ubuntu 24.04 + systemd + SSH) and Floci, then SSH key, throwaway secrets and buckets
 	$(TEST_COMPOSE) up -d --build --wait
 	test/prepare.sh
 
@@ -58,7 +61,7 @@ test-image: ## Build the API image from TT_API_SRC and save it to test/.work
 test-deploy: test-image ## Run the whole site.yml against the test host
 	$(TEST_PLAYBOOK) $(ANSIBLE_ARGS)
 
-test-smoke: ## Smoke test from the Mac through Caddy (HTTPS, sign-in, clips on Floci, HLS 401, backup/restore)
+test-smoke: ## Smoke test from the Mac through Caddy (HTTPS, sign-in, clips on Floci as R2, HLS 401, backup/restore)
 	test/smoke.sh
 
 test-down: ## Remove the test host, Floci and their volumes
