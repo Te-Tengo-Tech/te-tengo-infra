@@ -24,3 +24,18 @@ vault_fcm_credentials_json: ""
 
 # Only with te_tengo_registry_auth: login (GitHub token with read:packages).
 vault_registry_password: ""
+
+# Cloudflare R2 (object_storage_auth: static in the inventory). Create the tokens in the Cloudflare
+# dashboard (R2 > Manage R2 API Tokens), permission "Object Read & Write", each scoped to one bucket;
+# R2 shows the Access Key ID and the Secret Access Key once. Unused with the AWS instance role.
+# - clips token (te-tengo-clips): the API signs the pre-signed upload and playback URLs with it.
+vault_clips_s3_access_key_id: ""
+vault_clips_s3_secret_access_key: ""
+# - backups token (te-tengo-backups): the daily pg_dump upload and te-tengo-restore.
+vault_backup_s3_access_key_id: ""
+vault_backup_s3_secret_access_key: ""
+
+# SMTP relay credentials (with te_tengo_smtp_host in vars.yml). Some relays use an API key as the
+# password and a fixed user name; see the relay's SMTP settings.
+vault_smtp_username: ""
+vault_smtp_password: ""

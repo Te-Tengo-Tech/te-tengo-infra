@@ -1,4 +1,15 @@
 ---
+- name: Validate the backup storage keys
+  ansible.builtin.assert:
+    that:
+      - backup_access_key_id | length > 0
+      - backup_secret_access_key | length > 0
+    fail_msg: >-
+      object_storage_auth is static (Cloudflare R2) but vault_backup_s3_access_key_id or
+      vault_backup_s3_secret_access_key is empty (an R2 API token with Object Read & Write on the backups bucket).
+    quiet: true
+  when: backup_bucket | length > 0 and backup_object_storage_auth == 'static'
+
 - name: Create the backup directories
   ansible.builtin.file:
     path: "{{ item }}"
@@ -46,18 +57,41 @@
         - /tmp/awscliv2.zip
         - /tmp/aws
 
+- name: Write the AWS CLI configuration of the backup job
+  ansible.builtin.copy:
+    dest: /etc/te-tengo/aws-config
+    content: |
+      # Managed by Ansible (role backup). Used by te-tengo-backup and te-tengo-restore (AWS_CONFIG_FILE).
+      [default]
+      s3 =
+        addressing_style = {{ 'path' if backup_s3_path_style | bool else 'auto' }}
+    owner: root
+    group: root
+    mode: "0600"
+
 - name: Write the backup environment
   ansible.builtin.copy:
     dest: /etc/te-tengo/backup.env
     content: |
       # Managed by Ansible (role backup).
-      AWS_DEFAULT_REGION={{ backup_aws_region }}
-      {% for key, value in backup_aws_env | dictsort %}
+      {% for key, value in backup_env | dictsort %}
       {{ key }}={{ value }}
       {% endfor %}
     owner: root
     group: root
     mode: "0600"
+  vars:
+    backup_static_env:
+      AWS_ACCESS_KEY_ID: "{{ backup_access_key_id }}"
+      AWS_SECRET_ACCESS_KEY: "{{ backup_secret_access_key }}"
+      # Recent AWS CLI versions add flexible checksums to every upload; S3-compatible stores such as R2
+      # do not implement all of them, so send them only when the operation requires one.
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+    backup_env: >-
+      {{ {'AWS_DEFAULT_REGION': backup_aws_region, 'AWS_CONFIG_FILE': '/etc/te-tengo/aws-config'}
+         | combine(backup_static_env if backup_object_storage_auth == 'static' else {})
+         | combine(backup_aws_env) }}
   no_log: true
 
 - name: Install the backup and restore scripts

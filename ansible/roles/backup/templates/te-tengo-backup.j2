@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Managed by Ansible (role backup). Dumps the Te Tengo database and copies it to S3.
+# Managed by Ansible (role backup). Dumps the Te Tengo database and copies it to the S3-compatible
+# backups bucket (Cloudflare R2 or Amazon S3; credentials in /etc/te-tengo/backup.env).
 set -euo pipefail
 umask 077
 

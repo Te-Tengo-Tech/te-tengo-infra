@@ -2,11 +2,13 @@
 # Managed by Ansible (role backup). Restores a dump made by te-tengo-backup, replacing the database.
 #   te-tengo-restore {{ backup_dir }}/te-tengo-20261007T083000Z.dump
 #   te-tengo-restore s3://{{ backup_bucket | default('bucket', true) }}/{{ backup_s3_prefix }}/te-tengo-20261007T083000Z.dump
-#   te-tengo-restore latest        (newest dump in S3, or on the host without a bucket)
-# The instance role may only WRITE to the backups bucket (Terraform, least privilege): to restore
-# from S3 on the real host, export credentials allowed to read it first (e.g. a short-lived
-# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN of the operator), or copy the dump
-# to the host and pass its path. Dumps of the last days are also kept in {{ backup_dir }}.
+#   te-tengo-restore latest        (newest dump in the bucket, or on the host without a bucket)
+# Credentials: /etc/te-tengo/backup.env, unless AWS_ACCESS_KEY_ID is already exported.
+# - Cloudflare R2 (production): the backups token has Object Read & Write, so the host restores directly.
+# - Amazon S3 (AWS alternative): the instance role may only WRITE to the backups bucket (least
+#   privilege): export credentials allowed to read it first (e.g. a short-lived AWS_ACCESS_KEY_ID /
+#   AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN of the operator), or copy the dump to the host.
+# Dumps of the last days are also kept in {{ backup_dir }}.
 set -euo pipefail
 umask 077
 
@@ -18,6 +20,9 @@ if [[ -z "${AWS_ACCESS_KEY_ID:-}" ]]; then
   . /etc/te-tengo/backup.env
   set +a
 fi
+export AWS_CONFIG_FILE="${AWS_CONFIG_FILE:-/etc/te-tengo/aws-config}"
+export AWS_REQUEST_CHECKSUM_CALCULATION="${AWS_REQUEST_CHECKSUM_CALCULATION:-when_required}"
+export AWS_RESPONSE_CHECKSUM_VALIDATION="${AWS_RESPONSE_CHECKSUM_VALIDATION:-when_required}"
 aws_s3() {
   /usr/local/bin/aws s3 "$@" --region {{ backup_aws_region }}{{ ' --endpoint-url ' ~ backup_s3_endpoint if backup_s3_endpoint | length > 0 else '' }}
 }

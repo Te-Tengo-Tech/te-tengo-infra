@@ -9,19 +9,27 @@
       - app_memory_profile in app_memory_profiles
       - app_api_source in ['registry', 'archive', 'build']
       - app_registry_auth in ['none', 'login']
-      - app_aws_region | length > 0
       - app_clips_bucket | length > 0
-      - app_mail_provider in ['ses', 'registro']
-      - app_mail_provider != 'ses' or app_ses_sender | length > 0
+      - app_object_storage_region | length > 0
+      - app_object_storage_auth in ['static', 'instance_role']
+      - app_object_storage_endpoint == '' or app_object_storage_endpoint is match('^https?://[A-Za-z0-9.-]+(:[0-9]+)?$')
+      - app_mail_provider in ['smtp', 'ses', 'registro']
+      - app_mail_provider != 'ses' or (app_ses_sender | length > 0 and app_aws_region | length > 0)
+      - app_mail_provider != 'smtp' or (app_smtp_sender | length > 0 and app_smtp_port | int > 0)
+      - app_smtp_security in ['starttls', 'ssl', 'none']
+      - app_push_provider != 'sns' or app_aws_region | length > 0
       - app_push_provider in ['fcm', 'sns', 'registro']
       - app_push_provider != 'sns' or app_sns_platform_application_arn | length > 0
       - app_rtsps_port | int > 0
     fail_msg: >-
-      Missing or invalid settings. From the Terraform inventory: app_hostname, aws_region, clips_s3_bucket,
-      memory_profile (one of {{ app_memory_profiles.keys() | join(', ') }}), push_provider (fcm, sns or
-      registro; sns needs sns_platform_application_arn) and live_view_publish_port. From
+      Missing or invalid settings. From the Terraform inventory: app_hostname, clips_s3_bucket,
+      object_storage_region (or aws_region), object_storage_auth (static or instance_role),
+      object_storage_endpoint (an http(s) URL without a path, or empty for AWS), memory_profile (one of
+      {{ app_memory_profiles.keys() | join(', ') }}), push_provider (fcm, sns or registro; sns needs
+      sns_platform_application_arn and aws_region) and live_view_publish_port. From
       group_vars/te_tengo/vars.yml: te_tengo_acme_email, te_tengo_api_source (registry, archive or build),
-      te_tengo_registry_auth (none or login), te_tengo_mail_provider (ses needs ses_sender).
+      te_tengo_registry_auth (none or login), the mail provider (smtp needs te_tengo_smtp_sender and
+      te_tengo_smtp_port, te_tengo_smtp_security starttls/ssl/none; ses needs ses_sender and aws_region).
     quiet: true
 
 - name: Validate the vault
@@ -39,6 +47,25 @@
       vault_jwt_public_key_pem (X.509 PEM) and vault_mediamtx_auth_secret (32+ URL-safe characters,
       e.g. openssl rand -hex 32) are required. See group_vars/te_tengo/vault.yml.example.
     quiet: true
+
+- name: Validate the object storage keys
+  ansible.builtin.assert:
+    that:
+      - vault_clips_s3_access_key_id | default('') | length > 0
+      - vault_clips_s3_secret_access_key | default('') | length > 0
+    fail_msg: >-
+      object_storage_auth is static (Cloudflare R2) but vault_clips_s3_access_key_id or
+      vault_clips_s3_secret_access_key is empty (an R2 API token with Object Read & Write on the clips bucket).
+    quiet: true
+  when: app_object_storage_auth == 'static'
+
+- name: Validate the SMTP credentials
+  ansible.builtin.assert:
+    that:
+      - vault_smtp_password | default('') | length > 0
+    fail_msg: te_tengo_smtp_host is set but vault_smtp_password is empty (the SMTP relay's password or API key).
+    quiet: true
+  when: app_mail_provider == 'smtp' and vault_smtp_username | default('') | length > 0
 
 - name: Validate the Firebase key
   ansible.builtin.assert:
