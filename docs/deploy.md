@@ -106,6 +106,7 @@ On `main`, [`etiquetar.yml`](../.github/workflows/etiquetar.yml) creates the tag
 
 - **Preparing a release.** Branch `release/x.y.z` from `develop`, set `VERSION` to `x.y.z` and rename `[Unreleased]` in `CHANGELOG.md` to `[x.y.z] - <date>`, push. Hotfixes branch from `main` as `hotfix/x.y.z`.
 - **Re-running.** A new push to the same release branch runs the pipeline again. Runs of one branch never overlap (concurrency group per branch) and a running one is never cancelled, since it may be deploying; a newer push waits and replaces an older run that has not started yet. A run still waiting for an approval can be rejected on its run page.
+- **Checks of the release pull request.** A pull request opened with `GITHUB_TOKEN` starts no `pull_request` workflow, so `ansible.yml` and `terraform.yml` also run on pushes to `release/**` and `hotfix/**` (with their usual path filters); their results belong to the same commit and show on the pull request. `main` has no required checks here, unlike te-tengo-general-api.
 - **API access for staging.** te-tengo-general-api is public, so the workflow's own token checks it out; the `API_REPO_TOKEN` secret is only needed if it becomes private (`ansible.yml` still skips its deploy test without that secret).
 
 ### Switches
