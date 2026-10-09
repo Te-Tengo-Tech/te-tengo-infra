@@ -33,3 +33,4 @@ all:
           push_provider: fcm  # overridden by test/vars.yml: registro, no Firebase key in the test
           sns_platform_application_arn: ""
           live_view_publish_port: 8322
+          live_view_webrtc_port: 8189

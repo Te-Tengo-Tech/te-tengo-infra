@@ -2,7 +2,9 @@
 # Smoke test of the deployed test host, from the Mac, through Caddy over HTTPS (make test-smoke).
 # Checks: health, HSTS, hidden endpoints, sign-up and sign-in, an agent's pre-signed clip URL on
 # Floci standing in for Cloudflare R2 (and the upload itself), HLS 401 without a token, RTSPS with
-# Caddy's certificate, the production-shaped settings (R2-style keys, no AWS credentials; the OCI image
+# Caddy's certificate, live view end to end (an ffmpeg container publishes over RTSPS like the agent;
+# LL-HLS and WebRTC/WHEP are read through Caddy with the session's token: 201 with an SDP answer that
+# announces the ICE port over UDP and TCP, 401 without it or once the session is closed), the production-shaped settings (R2-style keys, no AWS credentials; the OCI image
 # firewall opened on OCI and left alone on Azure), and a backup to the bucket restored back. Prints a PASS/FAIL summary; exit code 1 on any failure.
 set -uo pipefail
 cd "$(dirname "$0")"
@@ -12,6 +14,11 @@ RTSPS="${TT_TEST_RTSPS:-localhost:18322}"
 FLOCI_MAC="${TT_TEST_FLOCI_MAC:-127.0.0.1:34566}"
 FLOCI_HOST="floci.test:4566"
 HOST=tt-test-host
+# Plays the household agent (publishes over RTSPS from outside the 1 GiB test host); same image as the
+# API's MediaMTX integration test.
+FFMPEG_IMAGE="${TT_TEST_FFMPEG_IMAGE:-bluenviron/mediamtx:1.21.1-ffmpeg}"
+PUBLISHER=tt-test-publisher
+WEBRTC_PORT="${TT_TEST_WEBRTC_PORT:-8189}"
 APP_DIR=/opt/te-tengo
 WORK=.work
 CA="$WORK/caddy-root.crt"
@@ -44,7 +51,8 @@ echo "== Te Tengo test host smoke test against $BASE"
 on_host cat "$APP_DIR/caddy/local-root.crt" >"$CA" 2>/dev/null || { echo "Run make test-deploy first" >&2; exit 2; }
 
 # 1. Health over HTTPS, verified against Caddy's local CA.
-health_headers=$(mktemp); trap 'rm -f "$health_headers"' EXIT
+health_headers=$(mktemp); whep_headers=$(mktemp); whep_body=$(mktemp)
+trap 'rm -f "$health_headers" "$whep_headers" "$whep_body"; docker rm -f "$PUBLISHER" >/dev/null 2>&1' EXIT
 status=$(curl -sS --cacert "$CA" -D "$health_headers" "$BASE/actuator/health" | jq -r .status 2>/dev/null)
 check "GET /actuator/health over HTTPS is UP (certificate verified)" [ "$status" = UP ]
 check "Strict-Transport-Security header" grep -qi '^strict-transport-security: max-age=' "$health_headers"
@@ -80,7 +88,7 @@ SQL
 check "Agent installation inserted in PostgreSQL on the host" [ $? -eq 0 ]
 
 r=$(call POST /api/agente/camaras/registro "$(jq -nc --arg c "$credential" '{credencialInstalacion:$c,nombreHabitacion:"Sala",versionAgente:"smoke"}')")
-agent=$(body "$r" | jq -r '.token // empty' 2>/dev/null)
+agent=$(body "$r" | jq -r '.token // empty' 2>/dev/null); camera=$(body "$r" | jq -r '.camaraId // empty' 2>/dev/null)
 check "POST /api/agente/camaras/registro registers the camera (200)" [ "$(code "$r")" = 200 -a -n "$agent" ]
 
 event_id=$(uuidgen | tr 'A-Z' 'a-z')
@@ -106,6 +114,100 @@ hls=$(curl -sS -L --cacert "$CA" -o /dev/null -w '%{http_code}' "$BASE/vivo/cama
 check "GET /vivo/.../index.m3u8 without a token is rejected (401)" [ "$hls" = 401 ]
 hls=$(curl -sS -L --cacert "$CA" -o /dev/null -w '%{http_code}' "$BASE/vivo/camaras/$(uuidgen | tr 'A-Z' 'a-z')/index.m3u8?token=not-a-session")
 check "GET /vivo/.../index.m3u8 with an unknown token is rejected (401)" [ "$hls" = 401 ]
+for p in udp tcp; do
+  check "MediaMTX publishes the WebRTC ICE port $WEBRTC_PORT/$p on the host" \
+    grep -q ":$WEBRTC_PORT\$" <<<"$(on_host docker compose port --protocol "$p" mediamtx "$WEBRTC_PORT" 2>/dev/null)"
+done
+check "The ICE TCP listener answers on the host ($WEBRTC_PORT/tcp)" \
+  docker exec "$HOST" bash -c "exec 3<>/dev/tcp/127.0.0.1/$WEBRTC_PORT"
+
+# A recvonly H.264 offer as a browser sends it (no trickle: no candidates). SDP lines end in CRLF, the
+# last one too.
+offer() {
+  printf '%s\r\n' 'v=0' 'o=- 1 2 IN IP4 127.0.0.1' 's=-' 't=0 0' 'a=group:BUNDLE 0' \
+    'm=video 9 UDP/TLS/RTP/SAVPF 96' 'c=IN IP4 0.0.0.0' 'a=ice-ufrag:ttsm' 'a=ice-pwd:tetengosmoketestpassword0' \
+    'a=fingerprint:sha-256 7B:8B:F0:65:5F:78:E2:51:3B:AC:6F:F3:3F:46:1B:35:DC:B8:5F:64:1A:24:C2:43:F0:A1:58:D0:A1:2C:19:08' \
+    'a=setup:actpass' 'a=mid:0' 'a=recvonly' 'a=rtcp-mux' 'a=rtpmap:96 H264/90000' \
+    'a=fmtp:96 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f'
+}
+whep() { # url -> status code; headers and answer in $whep_headers and $whep_body
+  offer | curl -sS --cacert "$CA" -o "$whep_body" -D "$whep_headers" -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/sdp' --data-binary @- "$1"
+}
+check "POST /vivo-webrtc/.../whep without a token is rejected (401)" \
+  [ "$(whep "$BASE/vivo-webrtc/camaras/$(uuidgen | tr 'A-Z' 'a-z')/whep")" = 401 ]
+check "POST /vivo-webrtc/.../whep with an unknown token is rejected (401)" \
+  [ "$(whep "$BASE/vivo-webrtc/camaras/$(uuidgen | tr 'A-Z' 'a-z')/whep?token=not-a-session")" = 401 ]
+preflight=$(curl -sS --cacert "$CA" -o /dev/null -D - -X OPTIONS "$BASE/vivo-webrtc/camaras/$camera/whep" \
+  -H 'Origin: https://app.tetengo.test' -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type')
+# shellcheck disable=SC2016
+check "WHEP CORS preflight from a browser origin (204 with Access-Control-Allow-Origin)" \
+  bash -c 'grep -q "^HTTP/[0-9.]* 204" <<<"$1" && grep -qi "^access-control-allow-origin: " <<<"$1"' _ "$preflight"
+
+# Live view end to end. The camera is online (heartbeat) and has consent; the session's transmission gets
+# a publish token the smoke test knows (the agent would receive it over its control channel), and ffmpeg
+# publishes over RTSPS like the agent, from outside the test host.
+call POST /api/agente/senal '' "$agent" >/dev/null
+r=$(call POST "/api/camaras/$camera/vista-en-vivo" '{"alertaId":null}' "$token")
+session_id=$(body "$r" | jq -r '.sesionId // empty' 2>/dev/null)
+hls_url=$(body "$r" | jq -r '.urlTransmision // empty' 2>/dev/null)
+viewer_token=${hls_url#*\?token=}
+check "POST /api/camaras/{id}/vista-en-vivo opens a session (201)" [ "$(code "$r")" = 201 -a -n "$session_id" ]
+api_webrtc=$(body "$r" | jq -r '.urlWebrtc // empty' 2>/dev/null)
+# The API's URLs name the host as the app sees it (https://localhost); from the Mac it is $BASE.
+whep_url="$BASE/vivo-webrtc/camaras/$camera/whep?token=$viewer_token"
+hls_url="$BASE/vivo/camaras/$camera/index.m3u8?token=$viewer_token"
+if [ -n "$api_webrtc" ]; then
+  check "The session's urlWebrtc is the WHEP endpoint behind Caddy (TT_VIVO_URL_WEBRTC)" \
+    [ "$api_webrtc" = "https://localhost/vivo-webrtc/camaras/$camera/whep?token=$viewer_token" ]
+else
+  echo "NOTE  this API image predates urlWebrtc (live view v3): the WHEP URL is built from the HLS token"
+fi
+publish_key="smoke-$(openssl rand -hex 16)"
+psql_host -v camara="$camera" -v huella="$(printf '%s' "$publish_key" | openssl dgst -sha256 -r | cut -d' ' -f1)" >/dev/null <<'SQL'
+update transmisiones_en_vivo set clave_hash = :'huella' where camara_id = :'camara';
+SQL
+network=$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$HOST")
+docker rm -f "$PUBLISHER" >/dev/null 2>&1
+docker run -d --rm --name "$PUBLISHER" --network "$network" --entrypoint ffmpeg "$FFMPEG_IMAGE" \
+  -hide_banner -loglevel warning -re -f lavfi -i testsrc=size=640x480:rate=15 -t 120 \
+  -c:v libx264 -profile:v baseline -preset ultrafast -tune zerolatency -g 8 -pix_fmt yuv420p \
+  -f rtsp -rtsp_transport tcp "rtsps://agente:$publish_key@$HOST:8322/camaras/$camera" >/dev/null
+whep_code=000
+for _ in $(seq 1 45); do
+  whep_code=$(whep "$whep_url")
+  [ "$whep_code" = 404 ] || break  # 404: authorized, the publisher is not on the path yet
+  sleep 1
+done
+check "POST /vivo-webrtc/.../whep with the session's token answers 201 (WHEP through Caddy)" [ "$whep_code" = 201 ]
+# shellcheck disable=SC2016
+check "The WHEP answer is SDP and sends H.264 Constrained Baseline" \
+  bash -c 'grep -qi "^content-type: application/sdp" "$1" && head -1 "$2" | grep -q "^v=0" && grep -q "a=sendonly" "$2" && grep -q "profile-level-id=42e01f" "$2"' _ "$whep_headers" "$whep_body"
+check "The WHEP answer announces 127.0.0.1:$WEBRTC_PORT over UDP (webrtcAdditionalHosts = public_ip)" \
+  grep -Eq "^a=candidate:[^ ]+ 1 udp [0-9]+ 127\.0\.0\.1 $WEBRTC_PORT typ host" "$whep_body"
+check "The WHEP answer announces 127.0.0.1:$WEBRTC_PORT over TCP (networks that block UDP)" \
+  grep -Eq "^a=candidate:[^ ]+ 1 tcp [0-9]+ 127\.0\.0\.1 $WEBRTC_PORT typ host tcptype passive" "$whep_body"
+# shellcheck disable=SC2016
+check "The WHEP answer announces no container address" bash -c '! grep -Eq "^a=candidate:.* (172\.|10\.|192\.168\.)" "$1"' _ "$whep_body"
+location=$(tr -d '\r' <"$whep_headers" | awk 'tolower($1) == "location:" { print $2 }')
+check "The WHEP session Location keeps the /vivo-webrtc/ prefix (Caddy header_down)" \
+  grep -q "^/vivo-webrtc/camaras/$camera/whep/" <<<"$location"
+check "DELETE of the WHEP session through Caddy ends it (200)" \
+  [ "$(curl -sS --cacert "$CA" -o /dev/null -w '%{http_code}' -X DELETE "$BASE$location")" = 200 ]
+# The LL-HLS muxer starts with the first request and needs a few segments before its first playlist.
+hls_code=000
+for _ in $(seq 1 30); do
+  hls_code=$(curl -sS -L --cacert "$CA" -o /dev/null -w '%{http_code}' "$hls_url")
+  [ "$hls_code" = 200 ] && break
+  sleep 1
+done
+check "GET /vivo/.../index.m3u8 with the session's token serves the LL-HLS playlist (200, fallback)" [ "$hls_code" = 200 ]
+check "DELETE /api/vista-en-vivo/{id} closes the session (204)" \
+  [ "$(code "$(call DELETE "/api/vista-en-vivo/$session_id" '' "$token")")" = 204 ]
+check "WHEP with the token of the closed session is rejected (401)" [ "$(whep "$whep_url")" = 401 ]
+docker rm -f "$PUBLISHER" >/dev/null 2>&1
+
 rtsps_subject=$(openssl s_client -connect "$RTSPS" -servername localhost -CAfile "$CA" -verify_return_error </dev/null 2>/dev/null \
   | openssl x509 -noout -ext subjectAltName 2>/dev/null | tr -d ' \n')
 check "RTSPS on 8322 presents Caddy's certificate for the host name" grep -q 'DNS:localhost' <<<"$rtsps_subject"

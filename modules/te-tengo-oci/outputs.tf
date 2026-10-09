@@ -38,6 +38,11 @@ output "live_view_hls_base_url" {
   value       = "https://${local.app_hostname}/vivo"
 }
 
+output "live_view_webrtc_url_template" {
+  description = "WebRTC (WHEP) endpoint of a camera, served by Caddy at /vivo-webrtc (API TT_VIVO_URL_WEBRTC); the media goes over live_view_webrtc_port."
+  value       = "https://${local.app_hostname}/vivo-webrtc/camaras/{camaraId}/whep"
+}
+
 output "availability_domain" {
   description = "Availability domain of the instance."
   value       = local.availability_domain
@@ -79,5 +84,6 @@ output "ansible_inventory" {
     clips_s3_bucket           = var.clips_bucket_name
     backup_s3_bucket          = var.backups_bucket_name
     live_view_publish_port    = var.live_view_publish_port
+    live_view_webrtc_port     = var.live_view_webrtc_port
   })
 }

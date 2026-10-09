@@ -19,8 +19,10 @@ resource "azurerm_subnet" "app" {
 
 locals {
   # Public entry points of the stack (compose/compose.yaml): Caddy on 80/TCP (ACME HTTP-01 and the
-  # redirect), 443/TCP (API, WebSockets, LL-HLS under /vivo) and 443/UDP (HTTP/3), MediaMTX RTSPS;
-  # SSH for the operator and Ansible. Everything else inbound hits the NSG's DenyAllInBound default.
+  # redirect), 443/TCP (API, WebSockets, LL-HLS under /vivo, WHEP signalling under /vivo-webrtc) and
+  # 443/UDP (HTTP/3), MediaMTX RTSPS and MediaMTX WebRTC media (ICE over UDP, and TCP for networks that
+  # block UDP); SSH for the operator and Ansible. Everything else inbound hits the NSG's DenyAllInBound
+  # default.
   inbound_rules = {
     http = {
       priority = 100
@@ -49,6 +51,20 @@ locals {
       port     = tostring(var.live_view_publish_port)
       sources  = var.live_view_publish_cidrs
       purpose  = "MediaMTX RTSPS: household agents publish live view"
+    }
+    webrtc_udp = {
+      priority = 150
+      protocol = "Udp"
+      port     = tostring(var.live_view_webrtc_port)
+      sources  = ["0.0.0.0/0"]
+      purpose  = "MediaMTX WebRTC: live view media to the app (ICE over UDP)"
+    }
+    webrtc_tcp = {
+      priority = 160
+      protocol = "Tcp"
+      port     = tostring(var.live_view_webrtc_port)
+      sources  = ["0.0.0.0/0"]
+      purpose  = "MediaMTX WebRTC: live view media where UDP is blocked (ICE over TCP)"
     }
     ssh = {
       priority = 140

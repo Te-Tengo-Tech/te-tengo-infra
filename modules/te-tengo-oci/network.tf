@@ -41,7 +41,8 @@ resource "oci_core_route_table" "public" {
 
 locals {
   # Public entry points of the stack (compose/compose.yaml): Caddy on 80/TCP (ACME HTTP-01 and the
-  # redirect), 443/TCP (API, WebSockets, LL-HLS under /vivo) and 443/UDP (HTTP/3), MediaMTX RTSPS.
+  # redirect), 443/TCP (API, WebSockets, LL-HLS under /vivo, WHEP under /vivo-webrtc) and 443/UDP
+  # (HTTP/3), MediaMTX RTSPS and MediaMTX WebRTC media (live_view_webrtc_port, UDP and TCP).
   public_tcp_ports = {
     http  = 80
     https = 443
@@ -84,6 +85,28 @@ resource "oci_core_security_list" "app" {
     udp_options {
       min = 443
       max = 443
+    }
+  }
+
+  ingress_security_rules {
+    description = "WebRTC: live view media from MediaMTX to the app (ICE over UDP)"
+    source      = "0.0.0.0/0"
+    protocol    = "17"
+
+    udp_options {
+      min = var.live_view_webrtc_port
+      max = var.live_view_webrtc_port
+    }
+  }
+
+  ingress_security_rules {
+    description = "WebRTC: live view media where UDP is blocked (ICE over TCP)"
+    source      = "0.0.0.0/0"
+    protocol    = "6"
+
+    tcp_options {
+      min = var.live_view_webrtc_port
+      max = var.live_view_webrtc_port
     }
   }
 

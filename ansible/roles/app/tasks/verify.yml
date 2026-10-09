@@ -38,6 +38,21 @@
   retries: 6
   delay: 5
 
+- name: Check that the live view (WebRTC, WHEP) is routed and rejects an offer without a token
+  ansible.builtin.uri:
+    url: "{{ app_base_url }}/vivo-webrtc/camaras/00000000-0000-0000-0000-000000000000/whep"
+    ca_path: "{{ app_dir ~ '/caddy/local-root.crt' if app_cert_issuer == 'internal' else omit }}"
+    method: POST
+    headers:
+      Content-Type: application/sdp
+    # MediaMTX authorizes before it parses the offer.
+    body: "v=0\r\n"
+    status_code: 401
+  register: app_whep
+  until: app_whep.status == 401
+  retries: 6
+  delay: 5
+
 - name: Check that internal and documentation endpoints are not exposed
   ansible.builtin.uri:
     url: "{{ app_base_url }}{{ item }}"
@@ -58,4 +73,4 @@
 
 - name: Report the deployment
   ansible.builtin.debug:
-    msg: "{{ app_base_url }} is UP (API image {{ app_api_image_ref | trim }}); HLS requires a token."
+    msg: "{{ app_base_url }} is UP (API image {{ app_api_image_ref | trim }}); HLS and WebRTC require a token."

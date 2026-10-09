@@ -136,6 +136,17 @@ variable "live_view_publish_cidrs" {
   default     = ["0.0.0.0/0"]
 }
 
+variable "live_view_webrtc_port" {
+  description = "Port of MediaMTX's WebRTC (ICE) listener, opened over UDP and TCP to everyone: the app plays live view over WebRTC from any network (WHEP signalling goes through Caddy on 443). MediaMTX accepts ICE only for sessions negotiated after an authorized WHEP request."
+  type        = number
+  default     = 8189
+
+  validation {
+    condition     = var.live_view_webrtc_port >= 1024 && var.live_view_webrtc_port <= 65535 && floor(var.live_view_webrtc_port) == var.live_view_webrtc_port
+    error_message = "live_view_webrtc_port must be an unprivileged port (1024-65535)."
+  }
+}
+
 # ----------------------------------------------------------------------------
 # DNS
 # ----------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 # through SSM Session Manager, which only needs outbound HTTPS from the instance.
 resource "aws_security_group" "app" {
   name        = "${local.name}-app"
-  description = "Caddy (HTTP, HTTPS, HTTP/3) and MediaMTX RTSPS publish; no SSH"
+  description = "Caddy (HTTP, HTTPS, HTTP/3), MediaMTX RTSPS publish and WebRTC media; no SSH"
   vpc_id      = aws_vpc.this.id
 
   tags = {
@@ -47,6 +47,17 @@ resource "aws_vpc_security_group_ingress_rule" "rtsps" {
   ip_protocol       = "tcp"
   from_port         = var.live_view_publish_port
   to_port           = var.live_view_publish_port
+}
+
+resource "aws_vpc_security_group_ingress_rule" "webrtc" {
+  for_each = toset(["udp", "tcp"])
+
+  security_group_id = aws_security_group.app.id
+  description       = "WebRTC: live view media from MediaMTX to the app (ICE over ${upper(each.value)})"
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = each.value
+  from_port         = var.live_view_webrtc_port
+  to_port           = var.live_view_webrtc_port
 }
 
 resource "aws_vpc_security_group_egress_rule" "all" {

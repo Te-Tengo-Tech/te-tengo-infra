@@ -28,6 +28,11 @@ output "live_view_hls_base_url" {
   value       = module.te_tengo.live_view_hls_base_url
 }
 
+output "live_view_webrtc_url_template" {
+  description = "WebRTC (WHEP) endpoint of a camera (API TT_VIVO_URL_WEBRTC)."
+  value       = module.te_tengo.live_view_webrtc_url_template
+}
+
 output "clips_bucket" {
   description = "Private S3 bucket of the fall clips (API TT_CLIPS_BUCKET)."
   value       = module.te_tengo.clips_bucket
