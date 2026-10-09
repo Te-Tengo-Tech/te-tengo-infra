@@ -4,6 +4,14 @@ Format based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/); 
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-09
+
+### Fixed
+
+- `produccion.yml` and `rollback.yml` call `deploy.yml` with `secrets: inherit`; without it the called job in `produccion` did not receive the environment secrets (`ANSIBLE_VAULT_B64`, `ANSIBLE_VAULT_PASSWORD`, `DEPLOY_SSH_PRIVATE_KEY`) and the production redeploy of 0.1.0 failed before touching the host.
+
+## [0.1.0] - 2026-10-09
+
 ### Added
 
 - **Release flow** with release candidates (git flow, "build once, deploy many", tag at the end; Mermaid diagram in `docs/deploy.md`): `release.yml` on pushes to `release/**` and `hotfix/**` checks the release commit (`VERSION`, yamllint, ansible-lint, syntax check, `docker compose config`), verifies it on the containerized test host (`make test-all`; automatic, no environment: there is no staging target), records it as the pre-release `vX.Y.Z-rc.N` with its git tree hash and opens or updates the pull request to `main`; nothing is deployed from a release branch. On `main`, `produccion.yml` finds the verified candidate whose tree hash equals `main`'s (fails when `main` differs from what was verified), redeploys the configuration to production through `deploy.yml` (environment `produccion`, switch `ENABLE_API_DEPLOY`) and only then tags `vX.Y.Z` from `VERSION` with its GitHub Release and opens the back-merge pull request to `develop`. `rollback.yml` (manual) redeploys the configuration of an earlier release (`config_ref`).

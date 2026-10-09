@@ -65,6 +65,9 @@ jobs:
     name: Roll back to ${{ inputs.version }}
     needs: resolve
     uses: ./.github/workflows/deploy.yml
+    # The called job runs in `produccion`: its environment secrets only reach a reusable workflow
+    # through `secrets: inherit`.
+    secrets: inherit
     permissions:
       contents: read
       # Requested by deploy.yml's (inactive) AWS job; unused for the Azure target.
