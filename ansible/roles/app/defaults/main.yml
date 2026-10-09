@@ -59,6 +59,8 @@ app_postgres_db: tetengo
 app_postgres_user: tetengo
 
 app_api_settings: "{{ te_tengo_api_settings | default({}) }}"
+# Browser origins allowed to read the live view (MediaMTX hlsAllowOrigins).
+app_hls_allow_origins: "{{ te_tengo_hls_allow_origins | default(['*']) }}"
 
 # Post-deploy checks over HTTPS, run on the host against its public name.
 app_verify: true

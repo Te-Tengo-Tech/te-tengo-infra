@@ -93,6 +93,8 @@ services:
     environment:
       # MTX_* variables override mediamtx.yml (MediaMTX reads them at startup).
       MTX_AUTHHTTPADDRESS: http://api:8080/api/interno/mediamtx/autorizar?secreto=${MEDIAMTX_AUTH_SECRET:?MEDIAMTX_AUTH_SECRET is required}
+      # Origins of browser clients (the PWA) allowed to read HLS, comma-separated; `*` for any.
+      MTX_HLSALLOWORIGINS: ${HLS_ALLOW_ORIGINS:?HLS_ALLOW_ORIGINS is required}
       MTX_RTSPSERVERCERT: /caddy-data/caddy/certificates/${CADDY_CERT_DIR:?CADDY_CERT_DIR is required}/${TT_HOSTNAME:?TT_HOSTNAME is required}/${TT_HOSTNAME}.crt
       MTX_RTSPSERVERKEY: /caddy-data/caddy/certificates/${CADDY_CERT_DIR}/${TT_HOSTNAME}/${TT_HOSTNAME}.key
     volumes:
