@@ -10,8 +10,10 @@ ANSIBLE_ARGS    ?=
 # Production settings that are not secret (ansible/prod.yml), passed before ANSIBLE_ARGS so an untracked
 # -e @prod.local.yml wins. Empty it for another host: make deploy DEPLOY_VARS=
 DEPLOY_VARS     ?= -e @prod.yml
-# Local te-tengo-general-api checkout the test image is built from.
+# Local te-tengo-general-api checkout the test image is built from, or a published image to pull instead
+# (TT_API_IMAGE_REF=ghcr.io/te-tengo-tech/te-tengo-general-api@sha256:..., as the release verification does).
 TT_API_SRC      ?= $(abspath ../te-tengo-general-api)
+TT_API_IMAGE_REF ?=
 TEST_COMPOSE    := docker compose -f test/compose.yaml
 # The test host plays the production VM: Azure with the 1 GiB "tiny" profile by default, the host
 # container capped at TEST_HOST_MEM. The OCI path: TEST_CLOUD=oci TEST_MEMORY_PROFILE=small TEST_HOST_MEM=2g.
@@ -67,8 +69,8 @@ test-host-up: ## Start the test host (Ubuntu 24.04 + systemd + SSH) and Floci, t
 	$(TEST_COMPOSE) up -d --build --wait
 	test/prepare.sh
 
-test-image: ## Build the API image from TT_API_SRC and save it to test/.work
-	TT_API_SRC="$(TT_API_SRC)" test/build-api-image.sh
+test-image: ## Build the API image from TT_API_SRC (or pull TT_API_IMAGE_REF) and save it to test/.work
+	TT_API_SRC="$(TT_API_SRC)" TT_API_IMAGE_REF="$(TT_API_IMAGE_REF)" test/build-api-image.sh
 
 test-deploy: test-image ## Run the whole site.yml against the test host
 	$(TEST_PLAYBOOK) $(ANSIBLE_ARGS)
