@@ -60,6 +60,11 @@ te_tengo_smtp_security: starttls
 # "Te Tengo <no-responder@tetengo.reqsai.tech>".
 te_tengo_smtp_sender: ""
 
+# Browser origins (scheme://host[:port]) allowed to read the live view over HLS: the PWA's origins, the
+# same as the API's TT_CORS_ORIGENES (set in te_tengo_api_settings). ["*"] allows any origin; native
+# clients send no Origin and are not affected. Playback still needs a token.
+te_tengo_hls_allow_origins: ["*"]
+
 # Extra API settings merged last into api.env (e.g. TT_RETENCION_CLIPS, TT_AGENTE_VERSION_PUBLICADA).
 te_tengo_api_settings: {}
 
