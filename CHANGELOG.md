@@ -4,6 +4,15 @@ Format based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/); 
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-09
+
+### Added
+
+- **Live view v3, WebRTC (WHEP) playback** with LL-HLS as the fallback (te-tengo-general-api ADR 0008). MediaMTX turns WebRTC on (`compose/mediamtx/mediamtx.yml`): WHEP signalling on 8889 inside the Docker network, served by Caddy at **`/vivo-webrtc/`** (prefix stripped, the WHEP session `Location` rewritten back under it, as in MediaMTX's "Expose the server in a subfolder"); media over one fixed ICE port, **8189 over UDP and TCP** (for networks that block UDP), published by Compose with the same number inside and outside; only the public address is announced (`webrtcIPsFromInterfaces: false`, `webrtcAdditionalHosts`); no STUN or TURN. Reads are authorized by the API's hook with the session's viewer token in the query (protocol `webrtc`), and browser origins are restricted like HLS (`webrtcAllowOrigins`).
+- Ansible: `te_tengo_webrtc_port` (inventory `live_view_webrtc_port`, default 8189), `te_tengo_webrtc_additional_hosts` (inventory `public_ip` by default; `api.tetengo.reqsai.tech` in `prod.yml`), `te_tengo_webrtc_allow_origins` (the HLS origins; set in `prod.yml`) and `te_tengo_webrtc_enabled` (default `true`; `false` leaves `TT_VIVO_URL_WEBRTC` out of `api.env`, so the app keeps LL-HLS). The API gets `TT_VIVO_URL_WEBRTC=https://<host>/vivo-webrtc/camaras/{camaraId}/whep`; Compose gets `WEBRTC_ICE_PORT`, `WEBRTC_ALLOW_ORIGINS` and `WEBRTC_ADDITIONAL_HOSTS` (required). The app role validates them; the base role accepts 8189/UDP+TCP in the OCI image firewall.
+- Terraform: `live_view_webrtc_port` (default 8189, 1024–65535) in the Azure, OCI and AWS modules. The Azure NSG gets `allow-webrtc_udp` (priority 150) and `allow-webrtc_tcp` (160) from anywhere, with the OCI security list and the AWS security group kept in parity. The inventory gains `live_view_webrtc_port`, and an output `live_view_webrtc_url_template` is added. `terraform test` covers the rules, the inventory and the port validation.
+- Smoke test (`make test-smoke`): live view end to end through Caddy. An ffmpeg container publishes over RTSPS like the agent. WHEP answers `201` with an SDP answer announcing `127.0.0.1:8189` over UDP and TCP (no container address). The WHEP `Location` stays under `/vivo-webrtc/`, the CORS preflight works and `401` comes back without a token or once the session is closed. LL-HLS answers `200` with the token, and the ICE port is published over UDP and TCP.
+
 ## [0.1.1] - 2026-10-09
 
 ### Fixed

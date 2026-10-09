@@ -98,7 +98,7 @@ run "always_free_defaults" {
     error_message = "6 GB on A1 must give the 'large' profile on arm64."
   }
 
-  # SSH only from admin_cidrs; 80, 443 (TCP and UDP) and 8322 from anywhere.
+  # SSH only from admin_cidrs; 80, 443 (TCP and UDP), 8322 and 8189 (WebRTC, UDP and TCP) from anywhere.
   assert {
     condition = toset([
       for rule in oci_core_security_list.app.ingress_security_rules : rule.source
@@ -111,8 +111,8 @@ run "always_free_defaults" {
     condition = toset([
       for rule in oci_core_security_list.app.ingress_security_rules : "${rule.protocol}/${coalesce(one(rule.tcp_options[*].min), one(rule.udp_options[*].min), 0)}"
       if rule.source == "0.0.0.0/0" && rule.protocol != "1"
-    ]) == toset(["6/80", "6/443", "17/443", "6/8322"])
-    error_message = "Only 80/TCP, 443/TCP, 443/UDP and 8322/TCP may be open to the Internet."
+    ]) == toset(["6/80", "6/443", "17/443", "6/8322", "17/8189", "6/8189"])
+    error_message = "Only 80/TCP, 443/TCP, 443/UDP, 8322/TCP and 8189/UDP+TCP may be open to the Internet."
   }
 
   assert {
@@ -145,6 +145,7 @@ run "inventory_shape" {
       push_provider                = "fcm"
       sns_platform_application_arn = ""
       live_view_publish_port       = 8322
+      live_view_webrtc_port        = 8189
     }
     error_message = "The rendered inventory does not match docs/interface-terraform-ansible.md."
   }

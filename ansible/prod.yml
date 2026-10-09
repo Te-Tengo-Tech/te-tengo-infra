@@ -29,6 +29,12 @@ te_tengo_hls_allow_origins:
   - https://app.tetengo.reqsai.tech
   - https://tetengo.reqsai.tech
   - https://te-tengo.pages.dev
+# Live view v3 (WebRTC, WHEP): the same origins open WebRTC from the browser, and MediaMTX announces the
+# API's public name as its ICE address (the A record of the static public IP; MediaMTX resolves it for
+# every session, so it follows the record).
+te_tengo_webrtc_allow_origins: "{{ te_tengo_hls_allow_origins }}"
+te_tengo_webrtc_additional_hosts:
+  - api.tetengo.reqsai.tech
 te_tengo_api_settings:
   TT_CORS_ORIGENES: https://app.tetengo.reqsai.tech,https://tetengo.reqsai.tech,https://te-tengo.pages.dev
   TT_PWA_URL: https://app.tetengo.reqsai.tech/

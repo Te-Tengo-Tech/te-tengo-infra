@@ -30,3 +30,4 @@ all:
           push_provider: fcm
           sns_platform_application_arn: ""
           live_view_publish_port: 8322
+          live_view_webrtc_port: 8189

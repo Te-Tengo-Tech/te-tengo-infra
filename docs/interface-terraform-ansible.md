@@ -37,6 +37,7 @@ all:
           push_provider: fcm
           sns_platform_application_arn: ''
           live_view_publish_port: 8322
+          live_view_webrtc_port: 8189
 ```
 The OCI module renders the same keys with `cloud_provider: oci`, the OCI region, `ansible_user: ubuntu` and `memory_profile` from the A1 memory (`large` for 6 GB). The AWS module renders the same keys plus `aws_region`, with `ansible_host` = the instance id and an SSM `ProxyCommand` in `ansible_ssh_common_args`; with `enable_s3_buckets` it sets `object_storage_endpoint: ''`, `object_storage_region` = the AWS region, `object_storage_path_style: false` and `object_storage_auth: instance_role`.
 
@@ -49,7 +50,7 @@ The OCI module renders the same keys with `cloud_provider: oci`, the OCI region,
 | `ansible_connection` | string | Always `ssh` | — |
 | `ansible_ssh_common_args` | string | **aws only** (`inventory_transport = "ssm"`): SSH tunnelled through SSM Session Manager (`AWS-StartSSHSession`); port 22 is closed there | Needs the AWS CLI, the Session Manager plugin and credentials allowed to `ssm:StartSession` |
 | `app_hostname` | string | Public name Caddy gets a Let's Encrypt certificate for: `app_hostname` (A record by hand at Namify), `mvp.<zone>` with Route53 (aws), else `<ip-with-dashes>.sslip.io` | Caddyfile site address; `TT_VIVO_URL_HLS=https://<app_hostname>/vivo`; `TT_VIVO_URL_PUBLICACION=rtsps://<app_hostname>:<live_view_publish_port>/camaras/{camaraId}` |
-| `public_ip` | string | Public IPv4 (Standard static on Azure, ephemeral or reserved on OCI, Elastic IP on AWS) | Diagnostics, the DNS record |
+| `public_ip` | string | Public IPv4 (Standard static on Azure, ephemeral or reserved on OCI, Elastic IP on AWS) | Diagnostics, the DNS record; the default address MediaMTX announces for WebRTC (`te_tengo_webrtc_additional_hosts`; production sets the public name in `prod.yml`) |
 | `cloud_provider` / `cloud_region` | `azure` \| `oci` \| `aws` / string | Where the VM runs | `oci` turns on the base role's tasks for the OCI image firewall; otherwise diagnostics |
 | `aws_region` | string | **aws only** | `TT_SES_REGION`, `TT_SNS_REGION` (only with SES/SNS) |
 | `memory_profile` | `tiny` \| `micro` \| `small` \| `medium` \| `large` | **azure:** from the memory of `vm_size` (`tiny` for the default 1 GiB `Standard_B2ats_v2`, `medium` for 4 GiB `Standard_B2als_v2`). **oci:** from `memory_in_gbs` (`large` for 6 GB). **aws:** `small` (≥ 2 GiB) or `micro`. Overridable with the module variable `memory_profile` | Selects swap size, container `mem_limit`s, JVM flags, PostgreSQL settings (`group_vars/te_tengo/memory.yml`) |
@@ -64,6 +65,7 @@ The OCI module renders the same keys with `cloud_provider: oci`, the OCI region,
 | `push_provider` | `fcm` \| `sns` | `fcm` (Firebase directly); `sns` only with the AWS module's `enable_sns` | `TT_PUSH_PROVEEDOR`. With `fcm`, Ansible places the Firebase key (vault) and sets `TT_FCM_CREDENCIALES` |
 | `sns_platform_application_arn` | string | GCM platform application; empty unless `enable_sns` | `TT_SNS_ARN_ANDROID` and `TT_SNS_ARN_IOS` |
 | `live_view_publish_port` | number | MediaMTX RTSPS port opened in the firewall (8322/TCP) | MediaMTX `rtspsAddress: :8322`, the Compose port mapping and the host firewall (base role) |
+| `live_view_webrtc_port` | number | MediaMTX WebRTC media port (ICE) opened in the firewall over UDP and TCP (8189; live view v3). Inventories rendered before it default to 8189 | MediaMTX `webrtcLocalUDPAddress` / `webrtcLocalTCPAddress`, the Compose port mappings (same number outside and inside) and the host firewall (base role, OCI) |
 
 E-mail through the SMTP relay is **not** part of the inventory: it is not infrastructure Terraform creates. Its host, port, security and sender live in `group_vars/te_tengo/vars.yml` (`te_tengo_smtp_*`) and its credentials in the vault ([ansible.md](ansible.md)).
 

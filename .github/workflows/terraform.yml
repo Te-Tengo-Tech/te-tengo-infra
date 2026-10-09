@@ -128,7 +128,7 @@ jobs:
           required = ["ansible_host", "ansible_user", "ansible_connection", "app_hostname", "aws_region",
                       "cloud_provider", "memory_profile", "instance_architecture", "object_storage_region",
                       "object_storage_auth", "clips_s3_bucket", "backup_s3_bucket", "ses_sender",
-                      "push_provider", "live_view_publish_port"]
+                      "push_provider", "live_view_publish_port", "live_view_webrtc_port"]
           missing = [key for key in required if host.get(key) in (None, "")]
           if missing:
               sys.exit(f"{name}: missing {missing}")

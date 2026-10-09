@@ -28,6 +28,11 @@ output "live_view_hls_base_url" {
   value       = "https://${local.app_hostname}/vivo"
 }
 
+output "live_view_webrtc_url_template" {
+  description = "WebRTC (WHEP) endpoint of a camera, served by Caddy at /vivo-webrtc (API TT_VIVO_URL_WEBRTC); the media goes over live_view_webrtc_port."
+  value       = "https://${local.app_hostname}/vivo-webrtc/camaras/{camaraId}/whep"
+}
+
 output "clips_bucket" {
   description = "Bucket of the fall clips (API TT_CLIPS_BUCKET): the S3 bucket with enable_s3_buckets, else clips_bucket_name."
   value       = local.clips_bucket
@@ -125,5 +130,6 @@ output "ansible_inventory" {
     push_provider                = var.enable_sns ? "sns" : "fcm"
     sns_platform_application_arn = var.enable_sns ? aws_sns_platform_application.fcm[0].arn : ""
     live_view_publish_port       = var.live_view_publish_port
+    live_view_webrtc_port        = var.live_view_webrtc_port
   })
 }

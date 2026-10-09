@@ -95,6 +95,12 @@ services:
       MTX_AUTHHTTPADDRESS: http://api:8080/api/interno/mediamtx/autorizar?secreto=${MEDIAMTX_AUTH_SECRET:?MEDIAMTX_AUTH_SECRET is required}
       # Origins of browser clients (the PWA) allowed to read HLS, comma-separated; `*` for any.
       MTX_HLSALLOWORIGINS: ${HLS_ALLOW_ORIGINS:?HLS_ALLOW_ORIGINS is required}
+      # WebRTC (WHEP) for the app: browser origins, the ICE port (the same number outside and inside the
+      # container, because the ICE candidates announce it) and the public addresses ICE announces.
+      MTX_WEBRTCALLOWORIGINS: ${WEBRTC_ALLOW_ORIGINS:?WEBRTC_ALLOW_ORIGINS is required}
+      MTX_WEBRTCLOCALUDPADDRESS: :${WEBRTC_ICE_PORT:?WEBRTC_ICE_PORT is required}
+      MTX_WEBRTCLOCALTCPADDRESS: :${WEBRTC_ICE_PORT}
+      MTX_WEBRTCADDITIONALHOSTS: ${WEBRTC_ADDITIONAL_HOSTS:?WEBRTC_ADDITIONAL_HOSTS is required}
       MTX_RTSPSERVERCERT: /caddy-data/caddy/certificates/${CADDY_CERT_DIR:?CADDY_CERT_DIR is required}/${TT_HOSTNAME:?TT_HOSTNAME is required}/${TT_HOSTNAME}.crt
       MTX_RTSPSERVERKEY: /caddy-data/caddy/certificates/${CADDY_CERT_DIR}/${TT_HOSTNAME}/${TT_HOSTNAME}.key
     volumes:
@@ -103,9 +109,13 @@ services:
       # (MediaMTX watches the files and reloads them when Caddy replaces them).
       - caddy-data:/caddy-data:ro
     ports:
-      # RTSPS for the household agent (publish only). HLS (8888) and the control API (9997) are
-      # reachable only inside the `edge` network: Caddy serves HLS at /vivo/, the API calls 9997.
+      # RTSPS for the household agent (publish only) and the WebRTC media for the app (ICE over UDP, and
+      # TCP where UDP is blocked). HLS (8888), WHEP signalling (8889) and the control API (9997) are
+      # reachable only inside the `edge` network: Caddy serves HLS at /vivo/ and WHEP at /vivo-webrtc/,
+      # the API calls 9997.
       - "${RTSPS_PORT:?RTSPS_PORT is required}:8322"
+      - "${WEBRTC_ICE_PORT}:${WEBRTC_ICE_PORT}/udp"
+      - "${WEBRTC_ICE_PORT}:${WEBRTC_ICE_PORT}/tcp"
     networks:
       - edge
     mem_limit: ${MEDIAMTX_MEM_LIMIT:?MEDIAMTX_MEM_LIMIT is required}

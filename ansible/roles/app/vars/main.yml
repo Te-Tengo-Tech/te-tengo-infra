@@ -23,6 +23,7 @@ app_compose_env:
   HTTP_PORT: "{{ app_http_port }}"
   HTTPS_PORT: "{{ app_https_port }}"
   RTSPS_PORT: "{{ app_rtsps_port }}"
+  WEBRTC_ICE_PORT: "{{ app_webrtc_port }}"
   API_IMAGE: "{{ app_api_image_ref | trim }}"
   POSTGRES_IMAGE: "{{ app_postgres_image }}"
   CADDY_IMAGE: "{{ app_caddy_image }}"
@@ -42,6 +43,8 @@ app_compose_env:
   API_JAVA_OPTS: "{{ app_profile.api_java_opts }}"
   MEDIAMTX_AUTH_SECRET: "{{ vault_mediamtx_auth_secret | default('') }}"
   HLS_ALLOW_ORIGINS: "{{ app_hls_allow_origins | join(',') }}"
+  WEBRTC_ALLOW_ORIGINS: "{{ app_webrtc_allow_origins | join(',') }}"
+  WEBRTC_ADDITIONAL_HOSTS: "{{ app_webrtc_additional_hosts | join(',') }}"
 
 app_api_env_core:
   SERVER_FORWARD_HEADERS_STRATEGY: native
@@ -84,6 +87,8 @@ app_api_env_core:
   TT_URL_TRANSMISION: "wss://{{ app_base_url | regex_replace('^https://', '') }}"
   TT_VIVO_URL_PUBLICACION: "rtsps://{{ app_public_hostname }}:{{ app_rtsps_port }}/camaras/{camaraId}"
   TT_VIVO_URL_HLS: "{{ app_base_url }}/vivo"
+  # Live view v3, WebRTC (WHEP) through Caddy; empty (not written) when app_webrtc_enabled is false.
+  TT_VIVO_URL_WEBRTC: "{{ (app_base_url ~ '/vivo-webrtc/camaras/{camaraId}/whep') if app_webrtc_enabled | bool else '' }}"
   TT_VIVO_MEDIAMTX_API: http://mediamtx:9997
   TT_VIVO_SECRETO_AUTORIZACION: "{{ vault_mediamtx_auth_secret | default('') }}"
 

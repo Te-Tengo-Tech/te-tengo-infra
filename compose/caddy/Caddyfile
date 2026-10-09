@@ -35,6 +35,18 @@
 		}
 	}
 
+	# Live view v3: WebRTC signalling (WHEP) from MediaMTX. POST /vivo-webrtc/camaras/<id>/whep?token=...
+	# with an SDP offer -> mediamtx:8889; MediaMTX asks the API (auth hook, protocol webrtc) whether the
+	# token in the query may read that path, and answers CORS itself (webrtcAllowOrigins). The answer's
+	# Location (the WHEP session, for PATCH and DELETE) is relative to MediaMTX's root: put the prefix
+	# back (MediaMTX docs, "Expose the server in a subfolder"). The media goes over the ICE port, not here.
+	handle /vivo-webrtc/* {
+		uri strip_prefix /vivo-webrtc
+		reverse_proxy mediamtx:8889 {
+			header_down Location "^/" "/vivo-webrtc/"
+		}
+	}
+
 	# REST API, its WebSocket endpoints (/api/agente/transmision, /api/vista-en-vivo/*/transmision;
 	# reverse_proxy upgrades them transparently) and the health probes. Swagger UI and /v3/api-docs
 	# are not routed (and the API disables them in production).

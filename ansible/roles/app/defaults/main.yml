@@ -12,6 +12,11 @@ app_cert_issuer: "{{ te_tengo_cert_issuer | default('acme') }}"
 app_http_port: "80"
 app_https_port: "443"
 app_rtsps_port: "{{ te_tengo_rtsps_port | default('8322') }}"
+# MediaMTX WebRTC (live view v3): ICE port (UDP and TCP), the addresses it announces, the browser origins,
+# and whether the API hands out urlWebrtc (TT_VIVO_URL_WEBRTC).
+app_webrtc_port: "{{ te_tengo_webrtc_port | default('8189') }}"
+app_webrtc_additional_hosts: "{{ te_tengo_webrtc_additional_hosts | default([app_public_hostname]) }}"
+app_webrtc_enabled: "{{ te_tengo_webrtc_enabled | default(true) }}"
 
 app_aws_region: "{{ te_tengo_aws_region | default('') }}"
 app_clips_bucket: "{{ te_tengo_clips_bucket | default('') }}"
@@ -65,8 +70,9 @@ app_postgres_db: tetengo
 app_postgres_user: tetengo
 
 app_api_settings: "{{ te_tengo_api_settings | default({}) }}"
-# Browser origins allowed to read the live view (MediaMTX hlsAllowOrigins).
+# Browser origins allowed to read the live view (MediaMTX hlsAllowOrigins and webrtcAllowOrigins).
 app_hls_allow_origins: "{{ te_tengo_hls_allow_origins | default(['*']) }}"
+app_webrtc_allow_origins: "{{ te_tengo_webrtc_allow_origins | default(app_hls_allow_origins) }}"
 
 # Post-deploy checks over HTTPS, run on the host against its public name.
 app_verify: true

@@ -4,7 +4,8 @@
 # --- Terraform -> Ansible interface (docs/interface-terraform-ansible.md) ---------------------------
 # The Terraform-generated inventory (envs/azure, envs/oci or envs/mvp) sets app_hostname, cloud_provider,
 # memory_profile, object_storage_*, clips_s3_bucket, backup_s3_bucket, ses_sender, push_provider,
-# sns_platform_application_arn and live_view_publish_port on the host (aws_region only on AWS). The
+# sns_platform_application_arn, live_view_publish_port and live_view_webrtc_port on the host (aws_region
+# only on AWS); public_ip is the default address WebRTC announces. The
 # roles read them through these te_tengo_* names; a hand-written inventory may set the te_tengo_* names
 # directly instead (host variables win over these group defaults).
 te_tengo_hostname: "{{ app_hostname | default('') }}"
@@ -24,6 +25,9 @@ te_tengo_ses_sender: "{{ ses_sender | default('') }}"
 te_tengo_push_provider: "{{ push_provider | default('fcm') }}"
 te_tengo_sns_platform_application_arn: "{{ sns_platform_application_arn | default('') }}"
 te_tengo_rtsps_port: "{{ live_view_publish_port | default(8322) }}"
+# MediaMTX WebRTC media (ICE, UDP and TCP), opened in the cloud firewall. Inventories rendered before live
+# view v3 have no live_view_webrtc_port: the module's default.
+te_tengo_webrtc_port: "{{ live_view_webrtc_port | default(8189) }}"
 # SMTP relay when te_tengo_smtp_host is set (production), else SES when Terraform verified a sender,
 # else e-mails are only logged.
 te_tengo_mail_provider: >-
@@ -68,6 +72,18 @@ te_tengo_smtp_sender: ""
 # same as the API's TT_CORS_ORIGENES (set in te_tengo_api_settings). ["*"] allows any origin; native
 # clients send no Origin and are not affected. Playback still needs a token.
 te_tengo_hls_allow_origins: ["*"]
+
+# Live view v3: the app plays WebRTC (WHEP, through Caddy at /vivo-webrtc) and falls back to LL-HLS.
+# false leaves TT_VIVO_URL_WEBRTC out of api.env, so the API answers urlWebrtc null and the app plays HLS
+# (MediaMTX keeps WebRTC on; nothing else changes).
+te_tengo_webrtc_enabled: true
+# Addresses MediaMTX announces as ICE candidates: the VM's public IP from the Terraform inventory, else
+# its public name (resolved by MediaMTX for every session). The container's own addresses are never
+# announced.
+te_tengo_webrtc_additional_hosts: >-
+  {{ [public_ip] if (public_ip | default('') | length > 0) else [te_tengo_hostname] }}
+# Browser origins allowed to open WebRTC (MediaMTX webrtcAllowOrigins): the same as HLS.
+te_tengo_webrtc_allow_origins: "{{ te_tengo_hls_allow_origins }}"
 
 # Extra API settings merged last into api.env (e.g. TT_RETENCION_CLIPS, TT_AGENTE_VERSION_PUBLICADA).
 te_tengo_api_settings: {}

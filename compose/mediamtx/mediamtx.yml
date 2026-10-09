@@ -1,8 +1,10 @@
-# MediaMTX for the Te Tengo live view (live view v2): the household agent publishes H.264 over
-# RTSPS to camaras/<camaraId>; the app reads LL-HLS through Caddy (/vivo/...).
+# MediaMTX for the Te Tengo live view (live view v3): the household agent publishes H.264 over
+# RTSPS to camaras/<camaraId>; the app reads WebRTC (WHEP signalling through Caddy at /vivo-webrtc/...,
+# media on the ICE port) and falls back to LL-HLS through Caddy (/vivo/...).
 # compose.yaml fills the host-specific values through MTX_* environment variables, which override
 # this file: authHTTPAddress (with the shared secret), rtspServerCert and rtspServerKey (Caddy's
-# certificate). The placeholders below are never used as they are.
+# certificate), the browser origins, the ICE port and the public addresses ICE announces. The
+# placeholders below are never used as they are.
 
 logLevel: info
 logDestinations: [stdout]
@@ -55,9 +57,31 @@ hlsPartDuration: 250ms
 hlsMuxerCloseAfter: 30s
 
 ###############################################
+# WebRTC for the app (live view v3, WHEP; MediaMTX docs v1.21, "Read with WebRTC clients" and "WebRTC-
+# specific features"). Signalling is plain HTTP inside the Docker network; Caddy terminates TLS and
+# serves it at /vivo-webrtc/ (rewriting the Location of each WHEP session). The viewer token goes in the
+# query (?token=), which MediaMTX passes to the API's hook with protocol webrtc. The media flows over one
+# fixed ICE port, UDP and TCP (for networks that block UDP), published by compose.yaml with the same
+# number outside and inside the container because the ICE candidates announce it. No STUN or TURN.
+webrtc: true
+webrtcAddress: :8889
+webrtcEncryption: false
+# Overridden by MTX_WEBRTCALLOWORIGINS (te_tengo_webrtc_allow_origins): the PWA's origins in production.
+webrtcAllowOrigins: ["*"]
+webrtcTrustedProxies: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+# Overridden by MTX_WEBRTCLOCALUDPADDRESS and MTX_WEBRTCLOCALTCPADDRESS (te_tengo_webrtc_port).
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+# The container's own addresses are useless to the app: only webrtcAdditionalHosts are announced,
+# overridden by MTX_WEBRTCADDITIONALHOSTS (te_tengo_webrtc_additional_hosts: the VM's public address or
+# name; a name is resolved by MediaMTX for every session).
+webrtcIPsFromInterfaces: false
+webrtcAdditionalHosts: []
+webrtcICEServers2: []
+
+###############################################
 # Everything else is off.
 rtmp: false
-webrtc: false
 srt: false
 moq: false
 

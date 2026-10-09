@@ -4,7 +4,7 @@ Infrastructure for **Te Tengo**: create the VM, configure the server and deploy 
 
 | Folder | Tool | Contains |
 |---|---|---|
-| `envs/azure/`, `modules/te-tengo-azure/` | Terraform | **Active.** One `Standard_B2ats_v2` VM (Ubuntu 24.04 x64, 30 GB Standard SSD, Trusted Launch) with a static Standard public IP in a minimal virtual network; NSG open on 80, 443 (TCP+UDP) and 8322, SSH (key only) from `admin_cidrs`; renders the Ansible inventory; tested offline with a mocked provider ([docs/terraform.md](docs/terraform.md)) |
+| `envs/azure/`, `modules/te-tengo-azure/` | Terraform | **Active.** One `Standard_B2ats_v2` VM (Ubuntu 24.04 x64, 30 GB Standard SSD, Trusted Launch) with a static Standard public IP in a minimal virtual network; NSG open on 80, 443 (TCP+UDP), 8322 and 8189 (TCP+UDP, WebRTC live view), SSH (key only) from `admin_cidrs`; renders the Ansible inventory; tested offline with a mocked provider ([docs/terraform.md](docs/terraform.md)) |
 | `envs/oci/`, `modules/te-tengo-oci/` | Terraform | **Inactive OCI alternative** (no Ampere A1 capacity was available): one `VM.Standard.A1.Flex` on Always Free; validated and tested offline, never applied |
 | `envs/mvp/`, `modules/te-tengo/`, `bootstrap/` | Terraform | **Inactive AWS alternative**, never applied: the same host on EC2 `t4g.small`, "VM only" by default (S3, SES, SNS and Route53 optional); verified against the Floci emulator through `envs/local/` |
 | `ansible/` | Ansible | Configure the host over SSH (Azure, OCI) or SSH over SSM (AWS): updates, swap, the OCI image firewall (OCI only), Docker; deploy `compose/` with the memory profile of the VM (`tiny` for 1 GiB); daily PostgreSQL backups to R2 ([docs/ansible.md](docs/ansible.md)) |
