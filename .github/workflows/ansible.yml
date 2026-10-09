@@ -9,7 +9,8 @@ on:
       - ansible.mk
       - Makefile
       - .yamllint
-      - .github/workflows/ansible.yml
+      # make yamllint also lints every workflow file.
+      - .github/workflows/**
   push:
     branches: [develop, main]
     paths:
@@ -19,7 +20,8 @@ on:
       - ansible.mk
       - Makefile
       - .yamllint
-      - .github/workflows/ansible.yml
+      # make yamllint also lints every workflow file.
+      - .github/workflows/**
   workflow_dispatch:
     inputs:
       api_ref:
