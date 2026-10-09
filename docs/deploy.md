@@ -64,6 +64,7 @@ te-tengo-infra: Deploy (deploy.yml, from main)
 | Push to `main` touching `ansible/**` or `compose/**` (a merged infra release) | `azure` (`produccion`) | `current`: configuration only, the image the host already runs |
 | Manual (*Actions → Deploy → Run workflow*, from `main`) | `azure` (default), `oci` or `aws` | the `api_tag` input; empty = `current`. Optional check mode (`--check --diff`) |
 
+- **Switch.** Every deploy job runs only when the organization variable **`ENABLE_API_DEPLOY`** is `true` (table below); otherwise it is skipped and the `plan` job's summary says why.
 - **Approval.** The `deploy-ssh` job runs in the GitHub environment **`produccion`** (required reviewers, branch policy `main`), so every production run pauses until a reviewer approves under *Actions → the run → Review deployments*; nothing touches the VM before that. The small `plan` job before it has no environment and no secrets. A manual run started from a branch other than `main` is refused by the branch policy.
 - **Not configured yet = a notice.** The environment's variables and secrets are checked as the first step after the approval: if any is missing the job ends green with a notice listing them, without touching the VM.
 - **`te_tengo_api_tag: current`.** A configuration deploy keeps the image: the app role reads `API_IMAGE` from the host's `/opt/te-tengo/.env` (written by the previous deploy) and reuses its tag (`ansible/roles/app/tasks/current-tag.yml`). If the host does not run a GHCR image (today it runs `te-tengo-general-api:local`, loaded from an archive) or was never deployed, the run fails before changing anything and asks for a tag. So **the first CI deploy must name a tag** (a dispatch from the API, or a manual run with `api_tag`); from then on `current` works, with no repository variable to keep in sync.
@@ -71,6 +72,13 @@ te-tengo-infra: Deploy (deploy.yml, from main)
 - **Workflow on `main`.** `repository_dispatch` only starts the workflow file of the default branch, on that branch, so the flow is active once this workflow and `ansible/prod.yml` are on `main`.
 - **Public image.** The VM pulls without credentials (`te_tengo_registry_auth: none`): the GHCR package must be made public once (te-tengo-general-api `docs/DEPLOYMENT.md`, *One-time steps*). A linked package inherits the repository's access permissions, not its visibility.
 - **Port 22.** The NSG accepts SSH from anywhere by default, so the GitHub-hosted runner reaches the VM directly; authentication is key-only and the VM's host key is **pinned** (`StrictHostKeyChecking=yes` with `SSH_KNOWN_HOSTS`), so a replaced or impersonated host stops the deploy.
+
+### Switches
+Each publishing channel has an on/off switch: an **organization** Actions variable of `Te-Tengo-Tech` (*Settings → Secrets and variables → Actions → Variables*), the single control panel for every repository. They are explicit opt-in: only the value `true` turns a channel on, and an unset variable means off. With the switch on, a production deploy still waits for an approval on `produccion`.
+
+| Variable | What it controls | Suggested value |
+|---|---|---|
+| `ENABLE_API_DEPLOY` | The `deploy-ssh` and `deploy-aws` jobs of `deploy.yml`, for every trigger (`desplegar-api` dispatch, push to `main`, manual) and target. Anything but `true` freezes production: the job shows as skipped and the `plan` summary says why. `te-tengo-general-api` gates its `desplegar-api` dispatch with the same variable | `true` |
 
 ### One-time setup of the `produccion` environment (te-tengo-infra)
 1. **Deploy key.** A dedicated ed25519 pair without passphrase, only for GitHub Actions: `ssh-keygen -t ed25519 -N '' -C te-tengo-deploy -f ~/.ssh/te_tengo_deploy_ed25519` (already generated on the operator's Mac; its public half is in `ansible/prod.yml` as `no-agent-forwarding,no-port-forwarding,no-X11-forwarding ssh-ed25519 AAAA... te-tengo-deploy`: no agent, port or X11 forwarding; no `from=` because GitHub-hosted runners have no fixed address; not `restrict`, which would also forbid a PTY and was not tested with Ansible's SSH options). The key logs in as `ubuntu`, which has sudo: it is as powerful as the operator's key, so keep it only in the GitHub secret and the operator's `~/.ssh`.

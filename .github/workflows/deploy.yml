@@ -17,6 +17,10 @@ run-name: >-
 # host key, the committed ansible/prod.yml); oci (inactive alternative, environment `oci`, same SSH path,
 # without prod.yml); aws (inactive alternative, environment `mvp`: GitHub OIDC -> AWS role -> SSH over SSM).
 # Inert until the environment is configured: without its variables and secrets the job ends with a notice.
+# Switch (organization variable, Te-Tengo-Tech → Settings → Secrets and variables → Actions → Variables;
+# explicit opt-in, unset means off): ENABLE_API_DEPLOY 'true' lets the deploy jobs run, for every trigger
+# and target. Any other value freezes production: the deploy job is skipped and the plan job's summary
+# says why. te-tengo-general-api gates its desplegar-api dispatch with the same variable.
 
 on:
   repository_dispatch:
@@ -69,6 +73,7 @@ jobs:
       - name: Target, image tag and reason
         id: resolve
         env:
+          ENABLE_API_DEPLOY: ${{ vars.ENABLE_API_DEPLOY }}
           EVENT: ${{ github.event_name }}
           INPUT_TARGET: ${{ inputs.target }}
           INPUT_TAG: ${{ inputs.api_tag }}
@@ -121,11 +126,20 @@ jobs:
             echo "|---|---|---|---|---|"
             echo "| $target | \`$environment\` | \`$tag\`$([ "$tag" = current ] && echo ' (the one the host runs)') | $check_only | $reason |"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$ENABLE_API_DEPLOY" != true ]; then
+            echo "::notice title=Deploy switched off::The organization variable ENABLE_API_DEPLOY is not 'true', so the deploy job is skipped and nothing touches the host."
+            {
+              echo ""
+              echo "**Deploy switched off:** the organization variable \`ENABLE_API_DEPLOY\` is not \`true\`, so the deploy job is skipped and nothing touches the host."
+              echo "To deploy, set it to \`true\` (Te-Tengo-Tech → Settings → Secrets and variables → Actions → Variables) and run this workflow by hand with the tag above."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   deploy-ssh:
     name: Deploy the app role (${{ needs.plan.outputs.target }}, SSH)
     needs: plan
-    if: needs.plan.outputs.target != 'aws'
+    # Switch: ENABLE_API_DEPLOY (organization variable) must be 'true'.
+    if: needs.plan.outputs.target != 'aws' && vars.ENABLE_API_DEPLOY == 'true'
     # Port 22 only accepts admin_cidrs (Terraform). On Azure that is anywhere by default, so a GitHub-hosted
     # runner works. With a narrowed admin_cidrs (always on OCI), set the variable DEPLOY_RUNNER to the label
     # of a self-hosted runner inside admin_cidrs, or see docs/deploy.md for the alternatives.
@@ -249,7 +263,8 @@ jobs:
   deploy-aws:
     name: Deploy the app role (AWS, SSH over SSM)
     needs: plan
-    if: needs.plan.outputs.target == 'aws'
+    # Switch: ENABLE_API_DEPLOY (organization variable) must be 'true'.
+    if: needs.plan.outputs.target == 'aws' && vars.ENABLE_API_DEPLOY == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     environment:
