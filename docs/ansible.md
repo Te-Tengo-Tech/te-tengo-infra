@@ -127,4 +127,4 @@ What differs from production, all in `test/vars.yml` and `test/inventory.yml`: `
 
 Result on 2026-10-08 with `TEST_CLOUD=azure TEST_MEMORY_PROFILE=tiny TEST_HOST_MEM=1g`: **28/28 checks passed**; a second `make test-deploy` reported `changed=0`. Memory: see [Memory profiles](#memory-profiles).
 
-CI (`.github/workflows/ansible.yml`) runs the static checks on every change, and the same containerized deploy (`make test-all`) when the `API_REPO_TOKEN` secret (read-only access to `te-tengo-general-api`) exists; without it the job is skipped with a notice.
+CI (`.github/workflows/ansible.yml`) runs the static checks on every change, and the same containerized deploy (`make test-all`) when the `API_REPO_TOKEN` secret (read-only access to `te-tengo-general-api`) exists; without it the job is skipped with a notice. The `staging` stage of every infra release (`release.yml`, [deploy.md](deploy.md#release-pipeline-of-this-repository-releaseyml)) runs the same harness on the release commit, checking the public API repository out with the workflow's own token.
