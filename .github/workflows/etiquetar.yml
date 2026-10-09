@@ -2,7 +2,7 @@ name: Tag the release
 run-name: Tag the release on main (${{ github.sha }})
 
 # Runs when a release or hotfix pull request is merged into main (docs/deploy.md, "Release flow"). By then
-# the configuration was staged and deployed from the release branch (release.yml); nothing is deployed here.
+# the configuration was verified and deployed from the release branch (release.yml); nothing is deployed here.
 #   1. release      creates the tag vX.Y.Z (version in VERSION) and a GitHub Release whose notes are the
 #                   CHANGELOG.md section of that version. Skipped when the tag already exists.
 #   2. back-merge   opens the pull request main → develop (title `chore: merge release x.y.z back into

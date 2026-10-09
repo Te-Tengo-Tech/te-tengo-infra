@@ -5,10 +5,11 @@ run-name: Release ${{ github.ref_name }}
 # A push to release/x.y.z or hotfix/x.y.z:
 #   1. check         the version (VERSION) and the static checks of ansible.yml (yamllint, ansible-lint,
 #                    syntax check, docker compose config) on the release commit. No environment.
-#   2. staging       environment `staging` (approval): the local container harness (make test-all, as the
-#                    deploy test of ansible.yml) deploys the release commit with site.yml to a containerized
-#                    Ubuntu 24.04 host capped like the Azure VM, smoke-tests it through Caddy and reports
-#                    its memory. The API image is built from te-tengo-general-api's main (the released API).
+#   2. verify        automatic verification, no environment and no approval (there is no staging
+#                    environment: no second VM). The local container harness (make test-all, as the deploy test
+#                    of ansible.yml) deploys the release commit with site.yml to a containerized Ubuntu 24.04
+#                    host capped like the Azure VM, smoke-tests it through Caddy and checks its memory budget.
+#                    The API image is built from te-tengo-general-api's main (the released API). Always runs.
 #   3. produccion    calls deploy.yml: a configuration-only redeploy of the app role to the Azure VM with the
 #                    image the host already runs (te_tengo_api_tag=current). Its deploy job runs in the
 #                    environment `produccion` (approval) and checks /actuator/health.
@@ -17,7 +18,6 @@ run-name: Release ${{ github.ref_name }}
 #
 # Switches (organization variables, Te-Tengo-Tech → Settings → Secrets and variables → Actions → Variables;
 # explicit opt-in, unset means off). A stage that is off is skipped and the check summary says why.
-#   ENABLE_STAGING      'true' runs the staging stage. Off: produccion only needs the check.
 #   ENABLE_API_DEPLOY   'true' runs the produccion stage (deploy.yml gates its deploy job with it too).
 on:
   push:
@@ -43,7 +43,7 @@ env:
   ANSIBLE_LINT_VERSION: 26.9.0
   YAMLLINT_VERSION: 1.38.0
   ANSIBLE_FORCE_COLOR: "1"
-  # The API the staging host runs: te-tengo-general-api's main, the API release in production.
+  # The API the verification host runs: te-tengo-general-api's main, the API release in production.
   API_REF: main
 
 jobs:
@@ -89,7 +89,6 @@ jobs:
         if: always()
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          ENABLE_STAGING: ${{ vars.ENABLE_STAGING }}
           ENABLE_API_DEPLOY: ${{ vars.ENABLE_API_DEPLOY }}
         run: |
           onoff() { [ "$1" = true ] && echo on || echo "**off**"; }
@@ -97,26 +96,20 @@ jobs:
             echo "## Release $VERSION ($GITHUB_REF_NAME, \`${GITHUB_SHA::7}\`)"
             echo "| Stage | Switch | State |"
             echo "|---|---|---|"
-            echo "| Staging (containerized host: deploy, smoke test, memory) | \`ENABLE_STAGING\` | $(onoff "$ENABLE_STAGING") |"
+            echo "| Verification (containerized host: deploy, smoke test, memory) | none, always runs | on |"
             echo "| Produccion (configuration redeploy to the Azure VM, approval on \`produccion\`) | \`ENABLE_API_DEPLOY\` | $(onoff "$ENABLE_API_DEPLOY") |"
             echo
-            if [ "$ENABLE_STAGING" != true ]; then
-              echo "- Staging is **skipped**: the organization variable \`ENABLE_STAGING\` is not \`true\`; produccion only needs this check."
-            fi
             if [ "$ENABLE_API_DEPLOY" != true ]; then
               echo "- Produccion is **skipped**: the organization variable \`ENABLE_API_DEPLOY\` is not \`true\` (production is frozen)."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  staging:
-    name: Staging (containerized host)
+  verify:
+    name: Verify configuration (containers)
     needs: check
-    # Switch: ENABLE_STAGING.
-    if: vars.ENABLE_STAGING == 'true'
+    # Always runs; no environment and no approval.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    # Required reviewers of `staging` approve here, before any step runs.
-    environment: staging
     env:
       TT_API_SRC: ${{ github.workspace }}/te-tengo-general-api
     steps:
@@ -148,7 +141,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "## Staging: containerized host"
+            echo "## Verification: containerized host"
             api_commit=$(git -C te-tengo-general-api rev-parse --short HEAD 2>/dev/null || echo 'not checked out')
             echo "Release commit \`${GITHUB_SHA::7}\` deployed with \`site.yml\` to the test host (Ubuntu 24.04, systemd, SSH,"
             echo "1 GiB like the Azure VM), API from te-tengo-general-api \`$API_REF\` ($api_commit)."
@@ -170,14 +163,13 @@ jobs:
 
   produccion:
     name: Produccion (configuration redeploy)
-    needs: [check, staging]
-    # Switch: ENABLE_API_DEPLOY. With ENABLE_STAGING on, staging must pass; with it off it is skipped and only
-    # the check is needed.
+    needs: [check, verify]
+    # Switch: ENABLE_API_DEPLOY. The verification must have passed.
     if: >-
       !cancelled()
       && needs.check.result == 'success'
+      && needs.verify.result == 'success'
       && vars.ENABLE_API_DEPLOY == 'true'
-      && (vars.ENABLE_STAGING != 'true' || needs.staging.result == 'success')
     # deploy.yml's deploy job runs in the environment `produccion` (required reviewers approve there).
     uses: ./.github/workflows/deploy.yml
     permissions:
@@ -192,8 +184,8 @@ jobs:
 
   pull-request:
     name: Open the release pull request (→ main)
-    needs: [check, staging, produccion]
-    # After every stage that ran passed (skipped stages are fine: their switch is off).
+    needs: [check, verify, produccion]
+    # After every stage that ran passed (a skipped produccion is fine: its switch is off).
     if: >-
       !cancelled()
       && needs.check.result == 'success'
@@ -206,7 +198,6 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.check.outputs.version }}
-      STAGING: ${{ needs.staging.result }}
       PRODUCCION: ${{ needs.produccion.result }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
@@ -214,11 +205,7 @@ jobs:
         run: |
           set -euo pipefail
           body="$RUNNER_TEMP/body.md"
-          if [ "$STAGING" = success ]; then
-            staging="containerized host (\`make test-all\`): \`site.yml\` deployed the release commit, the smoke test through Caddy passed"
-          else
-            staging="**skipped** (\`ENABLE_STAGING\` is off)"
-          fi
+          verification="containerized host (\`make test-all\`): \`site.yml\` deployed the release commit, the smoke test through Caddy passed"
           if [ "$PRODUCCION" = success ]; then
             produccion="configuration redeploy of the app role to the Azure VM with the API image it already runs (\`current\`),"
             produccion+=" approved on \`produccion\`; see the run for the health check"
@@ -231,7 +218,7 @@ jobs:
           | Stage | What happened |
           |---|---|
           | Check | version, yamllint, ansible-lint, syntax check, \`docker compose config\` |
-          | Staging | $staging |
+          | Verification | $verification |
           | Produccion | $produccion |
 
           Merging this pull request tags \`v$VERSION\` and creates the GitHub Release from CHANGELOG.md (etiquetar.yml),

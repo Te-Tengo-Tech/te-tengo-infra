@@ -46,18 +46,18 @@ On the 1 GiB host the first start is slow (image pulls, Flyway, the JVM with C1 
 Then seed the first household installation (`scripts/create-installation.sh` of the API, run against the host's PostgreSQL: `docker compose exec -T postgres psql -U tetengo -d tetengo` in `/opt/te-tengo`).
 
 ## 4. Release flow and continuous deployment (GitHub Actions)
-Every repository of Te Tengo follows the same git flow strategy, "build once, deploy many": environments are promoted from the **release branch**, and `main` and the tag come **last**, after production was approved. **Nothing is deployed on a push to `main`.** Two pipelines reach the production VM, both through [`deploy.yml`](../.github/workflows/deploy.yml) and its `produccion` approval:
+Every repository of Te Tengo follows the same git flow strategy, "build once, deploy many": environments are promoted from the **release branch**, and `main` and the tag come **last**, after production was approved. **Nothing is deployed on a push to `main`.** The API and this repository have **no staging environment** (there is no second VM): each release is verified automatically in throwaway containers in the runner, and production keeps the only approval, on `produccion`. Two pipelines reach the production VM, both through [`deploy.yml`](../.github/workflows/deploy.yml) and its `produccion` approval:
 
 ```mermaid
 flowchart TD
   subgraph api["te-tengo-general-api: push to release/x.y.z or hotfix/x.y.z (its release.yml)"]
-    abuild["build: image once (amd64 + arm64)<br/>GHCR sha-&lt;short&gt; + x.y.z-rc, digest"] --> astaging["staging (environment staging):<br/>ephemeral stack in the runner, same digest<br/>smoke test + end-to-end"]
-    astaging --> aprod["produccion: repository_dispatch desplegar-api<br/>{tag, digest, ref, version}"]
+    abuild["build: image once (amd64 + arm64)<br/>GHCR sha-&lt;short&gt; + x.y.z-rc, digest"] --> averify["verify (automatic, no approval):<br/>ephemeral stack in the runner, same digest<br/>smoke test + end-to-end"]
+    averify --> aprod["produccion: repository_dispatch desplegar-api<br/>{tag, digest, ref, version}"]
     aprod --> apr["pull request release/x.y.z → main"]
   end
   subgraph infra["te-tengo-infra: push to release/x.y.z or hotfix/x.y.z (release.yml)"]
-    icheck["check: VERSION, yamllint, ansible-lint,<br/>syntax check, compose config"] --> istaging["staging (environment staging):<br/>containerized host, make test-all<br/>on the release commit"]
-    istaging --> iprod["produccion: calls deploy.yml<br/>api_tag empty = current (configuration only)"]
+    icheck["check: VERSION, yamllint, ansible-lint,<br/>syntax check, compose config"] --> iverify["verify (automatic, no approval):<br/>containerized host, make test-all<br/>on the release commit"]
+    iverify --> iprod["produccion: calls deploy.yml<br/>api_tag empty = current (configuration only)"]
     iprod --> ipr["pull request release/x.y.z → main"]
   end
   aprod --> deploy["deploy.yml (from main for the dispatch)<br/>plan: tag must still resolve to the digest<br/>deploy-ssh in environment produccion: WAITS for approval<br/>Ansible app role over SSH, prod.yml<br/>GET /actuator/health = UP"]
@@ -69,7 +69,7 @@ flowchart TD
 ### Deploy (`deploy.yml`)
 | Trigger | Target | Image tag |
 |---|---|---|
-| `repository_dispatch` `desplegar-api` (the `produccion` stage of te-tengo-general-api's Release workflow, after its staging) | `azure` (`produccion`) | `client_payload.tag`, e.g. `sha-1a2b3c4`. `client_payload.digest` is checked against the registry before the deploy (the tag must still point to the staged image); `ref` (the API commit) and `version` are shown in the run summary |
+| `repository_dispatch` `desplegar-api` (the `produccion` stage of te-tengo-general-api's Release workflow, after its verification) | `azure` (`produccion`) | `client_payload.tag`, e.g. `sha-1a2b3c4`. `client_payload.digest` is checked against the registry before the deploy (the tag must still point to the verified image); `ref` (the API commit) and `version` are shown in the run summary |
 | `workflow_call` from this repository's Release workflow (`produccion` stage of an infra release) | `azure` (`produccion`) | `current`: configuration only, the image the host already runs |
 | Manual (*Actions → Deploy → Run workflow*, from `main` or a release branch) | `azure` (default), `oci` or `aws` | the `api_tag` input; empty = `current`. Optional check mode (`--check --diff`) |
 
@@ -98,8 +98,8 @@ A push to `release/x.y.z` or `hotfix/x.y.z` of te-tengo-infra:
 | Job | Environment | What it does |
 |---|---|---|
 | `check` | none | Reads `VERSION` (a warning if the branch name differs) and runs the static checks of `ansible.yml` on the release commit: yamllint, ansible-lint (production profile), the playbook syntax check with `prod.yml`, `docker compose config`. Its summary lists the switches |
-| `staging` | `staging` (required reviewers) | The local container harness, as `make test-all`: `make test-host-up`, `test-deploy` (the whole `site.yml` against the containerized Ubuntu 24.04 host capped at 1 GiB, API image built from te-tengo-general-api's `main`), `test-smoke` (through Caddy over HTTPS, clips on Floci as R2, backup and restore) and `test-memory` (the `tiny` budget), then `test-down` |
-| `produccion` | `produccion`, inside `deploy.yml` | Calls `deploy.yml` with target `azure` and an empty tag: a configuration-only redeploy of the app role with the image the host already runs, after an approval. Needs `staging`, or only `check` when `ENABLE_STAGING` is off |
+| `verify` (*Verify configuration (containers)*) | none, no approval | Always runs. The local container harness, as `make test-all`: `make test-host-up`, `test-deploy` (the whole `site.yml` against the containerized Ubuntu 24.04 host capped at 1 GiB, API image built from te-tengo-general-api's `main`), `test-smoke` (through Caddy over HTTPS, clips on Floci as R2, backup and restore) and `test-memory` (the `tiny` budget), then `test-down` |
+| `produccion` | `produccion`, inside `deploy.yml` | Calls `deploy.yml` with target `azure` and an empty tag: a configuration-only redeploy of the app role with the image the host already runs, after an approval. Needs `check` and `verify` to pass |
 | `pull-request` | none | Opens the pull request `release/x.y.z → main` (title `release: x.y.z`) with `GITHUB_TOKEN`, listing what ran where, or updates its description when it is already open. Merging it is a human action (the `main` ruleset needs a review) |
 
 On `main`, [`etiquetar.yml`](../.github/workflows/etiquetar.yml) creates the tag `vX.Y.Z` from `VERSION` and a GitHub Release with the `CHANGELOG.md` section of that version as notes (skipped if the tag exists), then opens the back-merge pull request `main → develop` (`chore: merge release x.y.z back into develop`).
@@ -107,14 +107,13 @@ On `main`, [`etiquetar.yml`](../.github/workflows/etiquetar.yml) creates the tag
 - **Preparing a release.** Branch `release/x.y.z` from `develop`, set `VERSION` to `x.y.z` and rename `[Unreleased]` in `CHANGELOG.md` to `[x.y.z] - <date>`, push. Hotfixes branch from `main` as `hotfix/x.y.z`.
 - **Re-running.** A new push to the same release branch runs the pipeline again. Runs of one branch never overlap (concurrency group per branch) and a running one is never cancelled, since it may be deploying; a newer push waits and replaces an older run that has not started yet. A run still waiting for an approval can be rejected on its run page.
 - **Checks of the release pull request.** A pull request opened with `GITHUB_TOKEN` starts no `pull_request` workflow, so `ansible.yml` and `terraform.yml` also run on pushes to `release/**` and `hotfix/**` (with their usual path filters); their results belong to the same commit and show on the pull request. `main` has no required checks here, unlike te-tengo-general-api.
-- **API access for staging.** te-tengo-general-api is public, so the workflow's own token checks it out; the `API_REPO_TOKEN` secret is only needed if it becomes private (`ansible.yml` still skips its deploy test without that secret).
+- **API access for the verification.** te-tengo-general-api is public, so the workflow's own token checks it out; the `API_REPO_TOKEN` secret is only needed if it becomes private (`ansible.yml` still skips its deploy test without that secret).
 
 ### Switches
-Each stage has an on/off switch: an **organization** Actions variable of `Te-Tengo-Tech` (*Settings → Secrets and variables → Actions → Variables*), the single control panel for every repository. They are explicit opt-in: only the value `true` turns a channel on, and an unset variable means off. With the switch on, a production deploy still waits for an approval on `produccion`.
+Production has an on/off switch (the verification always runs): an **organization** Actions variable of `Te-Tengo-Tech` (*Settings → Secrets and variables → Actions → Variables*), the single control panel for every repository. They are explicit opt-in: only the value `true` turns a channel on, and an unset variable means off. With the switch on, a production deploy still waits for an approval on `produccion`.
 
 | Variable | What it controls | Suggested value |
 |---|---|---|
-| `ENABLE_STAGING` | The `staging` job of `release.yml` (the containerized host). Off: `produccion` only needs the `check` job | `true` |
 | `ENABLE_API_DEPLOY` | The `produccion` job of `release.yml` and the `deploy-ssh` and `deploy-aws` jobs of `deploy.yml`, for every trigger (`desplegar-api` dispatch, infra release, manual) and target. Anything but `true` freezes production: the job shows as skipped and the summary says why. `te-tengo-general-api` gates its `desplegar-api` dispatch with the same variable | `true` |
 
 ### One-time setup of the `produccion` environment (te-tengo-infra)

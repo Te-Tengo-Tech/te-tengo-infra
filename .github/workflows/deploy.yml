@@ -9,7 +9,7 @@ run-name: >-
 # job starts, so nothing touches the VM without approval. There are no deploys on a push to main: releases
 # are promoted from their release branch, and main is merged last.
 # - repository_dispatch `desplegar-api`: sent by the produccion stage of te-tengo-general-api's Release
-#   workflow (release.yml, on its release/* or hotfix/* branch) after the image passed its staging;
+#   workflow (release.yml, on its release/* or hotfix/* branch) after the image passed its verification;
 #   client_payload {tag: sha-<short commit>, digest: sha256:..., ref: <commit>, version: x.y.z}. Deploys that
 #   tag to production (Azure) after checking that it still resolves to the digest.
 # - workflow_call: the produccion stage of this repository's Release workflow (release.yml) redeploys the
@@ -130,15 +130,15 @@ jobs:
             echo "::error::Invalid image tag: $tag"
             exit 1
           fi
-          # The release staged this digest: refuse to deploy if the tag was moved since. The check reads the
+          # The release verified this digest: refuse to deploy if the tag was moved since. The check reads the
           # registry anonymously, so it needs the public package; otherwise it only warns.
           if [ -n "$digest" ]; then
             if resolved=$(docker buildx imagetools inspect "$API_IMAGE:$tag" --format '{{json .Manifest}}' 2>/dev/null | jq -r '.digest'); then
               if [ "$resolved" != "$digest" ]; then
-                echo "::error::$API_IMAGE:$tag resolves to $resolved, not to the staged digest $digest"
+                echo "::error::$API_IMAGE:$tag resolves to $resolved, not to the verified digest $digest"
                 exit 1
               fi
-              echo "$API_IMAGE:$tag resolves to the staged digest $digest"
+              echo "$API_IMAGE:$tag resolves to the verified digest $digest"
             else
               echo "::warning::Could not read $API_IMAGE:$tag from the registry (is the package public?); its digest was not checked."
             fi
