@@ -4,6 +4,8 @@ Format based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/); 
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-09
+
 ### Added
 
 - **Release flow** (git flow, "build once, deploy many"): `release.yml` on pushes to `release/**` and `hotfix/**` checks the release commit (`VERSION`, yamllint, ansible-lint, syntax check, `docker compose config`), verifies it on the containerized test host (`make test-all`; automatic, no environment: there is no staging environment), redeploys the configuration to production through `deploy.yml` (environment `produccion`, switch `ENABLE_API_DEPLOY`) and opens the pull request to `main`. On `main`, `etiquetar.yml` tags `vX.Y.Z` from `VERSION`, creates the GitHub Release from this file and opens the back-merge pull request to `develop`. Mermaid diagram in `docs/deploy.md`.
