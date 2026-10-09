@@ -4,6 +4,8 @@ Format based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/); 
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-09
+
 ### Added
 
 - **Live view v3, WebRTC (WHEP) playback** with LL-HLS as the fallback (te-tengo-general-api ADR 0008). MediaMTX turns WebRTC on (`compose/mediamtx/mediamtx.yml`): WHEP signalling on 8889 inside the Docker network, served by Caddy at **`/vivo-webrtc/`** (prefix stripped, the WHEP session `Location` rewritten back under it, as in MediaMTX's "Expose the server in a subfolder"); media over one fixed ICE port, **8189 over UDP and TCP** (for networks that block UDP), published by Compose with the same number inside and outside; only the public address is announced (`webrtcIPsFromInterfaces: false`, `webrtcAdditionalHosts`); no STUN or TURN. Reads are authorized by the API's hook with the session's viewer token in the query (protocol `webrtc`), and browser origins are restricted like HLS (`webrtcAllowOrigins`).
