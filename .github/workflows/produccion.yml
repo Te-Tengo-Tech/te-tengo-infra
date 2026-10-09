@@ -116,6 +116,9 @@ jobs:
     if: needs.candidate.outputs.released != 'true' && vars.ENABLE_API_DEPLOY == 'true'
     # deploy.yml's deploy job runs in the environment `produccion` (required reviewers approve there).
     uses: ./.github/workflows/deploy.yml
+    # The called job runs in `produccion`: its environment secrets only reach a reusable workflow
+    # through `secrets: inherit`.
+    secrets: inherit
     permissions:
       contents: read
       # Requested by deploy.yml's (inactive) AWS job; unused for the Azure target.
