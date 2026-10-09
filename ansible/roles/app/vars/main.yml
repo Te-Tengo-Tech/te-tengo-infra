@@ -6,8 +6,12 @@ app_cert_dirs:
   acme: acme-v02.api.letsencrypt.org-directory
   internal: local
 app_cert_dir: "{{ app_cert_dirs[app_cert_issuer] | default('') }}"
+# repository:tag, repository:tag@digest or repository@digest (tag empty or `current` with a digest).
 app_api_image_ref: >-
-  {{ app_api_repository ~ ':' ~ app_api_tag if app_api_source == 'registry' else app_api_local_image }}
+  {{ (app_api_repository
+      ~ ((':' ~ app_api_tag) if app_api_tag not in ['', 'current'] else '')
+      ~ (('@' ~ app_api_digest) if app_api_digest | length > 0 else ''))
+     if app_api_source == 'registry' else app_api_local_image }}
 app_secrets_dir: "{{ app_dir }}/secrets"
 app_secrets_mount: /run/secrets/te-tengo
 

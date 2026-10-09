@@ -1,7 +1,7 @@
 ---
-- name: Resolve the deployed API tag (te_tengo_api_tag current)
+- name: Resolve the deployed API image (te_tengo_api_tag current, no digest)
   ansible.builtin.include_tasks: current-tag.yml
-  when: app_api_source == 'registry' and app_api_tag == 'current'
+  when: app_api_source == 'registry' and app_api_tag == 'current' and app_api_digest | length == 0
 
 - name: Validate required settings
   ansible.builtin.assert:
@@ -13,7 +13,8 @@
       - app_memory_profile in app_memory_profiles
       - app_api_source in ['registry', 'archive', 'build']
       - app_registry_auth in ['none', 'login']
-      - app_api_source != 'registry' or app_api_tag is match('^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$')
+      - app_api_source != 'registry' or app_api_tag is match('^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$') or app_api_digest | length > 0
+      - app_api_digest | length == 0 or app_api_digest is match('^sha256:[0-9a-f]{64}$')
       - app_clips_bucket | length > 0
       - app_object_storage_region | length > 0
       - app_object_storage_auth in ['static', 'instance_role']
@@ -35,7 +36,8 @@
       {{ app_memory_profiles.keys() | join(', ') }}), push_provider (fcm, sns or registro; sns needs
       sns_platform_application_arn and aws_region) and live_view_publish_port. From
       group_vars/te_tengo/vars.yml: te_tengo_acme_email, te_tengo_api_source (registry, archive or build),
-      te_tengo_registry_auth (none or login), te_tengo_api_tag (an image tag, or current), the mail provider (smtp needs te_tengo_smtp_sender and
+      te_tengo_registry_auth (none or login), te_tengo_api_tag (an image tag, or current) and te_tengo_api_digest
+      (empty or sha256:<64 hex>), the mail provider (smtp needs te_tengo_smtp_sender and
       te_tengo_smtp_port, te_tengo_smtp_security starttls/ssl/none; ses needs ses_sender and aws_region).
     quiet: true
 
@@ -229,6 +231,10 @@
 - name: Build the API image on the host
   ansible.builtin.include_tasks: build.yml
   when: app_api_source == 'build'
+
+- name: Back up the database before the API image changes
+  ansible.builtin.include_tasks: backup-before-image-change.yml
+  when: app_stack_existed | bool and app_backup_before_image_change | bool
 
 - name: Start or update the stack
   community.docker.docker_compose_v2:
