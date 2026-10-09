@@ -1,6 +1,6 @@
 # Deploy runbook (Terraform → Ansible → Compose)
 
-End-to-end procedure to put the Te Tengo backend in production: one **Azure VM** (`Standard_B2ats_v2`, 2 vCPU AMD, 1 GiB, Ubuntu 24.04 x64, Azure for Students subscription, region `chilecentral`) running Caddy, the API, PostgreSQL 18 and MediaMTX with Docker Compose under the `tiny` memory profile; clips and dumps in **Cloudflare R2**; DNS at **Namify**; e-mail through an **SMTP relay**; push through Firebase. **Not run yet**: it needs the Terraform apply, the R2 buckets and tokens, the DNS record, the Firebase key, the SMTP relay and a published API image. Infrastructure details: [terraform.md](terraform.md); host and stack details: [ansible.md](ansible.md); handoff contract: [interface-terraform-ansible.md](interface-terraform-ansible.md). The inactive alternatives (`envs/oci`, plain SSH like Azure; `envs/mvp`, SSH over SSM) are noted where they differ.
+End-to-end procedure to put the Te Tengo backend in production: one **Azure VM** (`Standard_B2ats_v2`, 2 vCPU AMD, 1 GiB, Ubuntu 24.04 x64, Azure for Students subscription, region `chilecentral`) running Caddy, the API, PostgreSQL 18 and MediaMTX with Docker Compose under the `tiny` memory profile; clips and dumps in **Cloudflare R2**; DNS at **Namify**; e-mail through an **SMTP relay**; push through Firebase. **First run on 2026-10-08** (API image loaded from an archive, `te_tengo_api_source: archive`; no SMTP relay yet, so e-mails are only logged): the playbook passed its HTTPS checks, Let's Encrypt issued the certificate in seconds and the first backup reached R2. Still pending: the SMTP relay and a published API image for registry deploys. Infrastructure details: [terraform.md](terraform.md); host and stack details: [ansible.md](ansible.md); handoff contract: [interface-terraform-ansible.md](interface-terraform-ansible.md). The inactive alternatives (`envs/oci`, plain SSH like Azure; `envs/mvp`, SSH over SSM) are noted where they differ.
 
 ## 0. Prerequisites (operator machine)
 - Terraform ≥ 1.10, the Azure CLI, Ansible core ≥ 2.18 (`make galaxy` for the collections), Docker (for the local test), `jq`, `openssl`, an OpenSSH key pair.
@@ -11,7 +11,7 @@ End-to-end procedure to put the Te Tengo backend in production: one **Azure VM**
 ## 1. Infrastructure (Terraform, envs/azure)
 1. `az login`; fill `envs/azure/terraform.tfvars` (`subscription_id` from `az account show --query id -o tsv`, `location = "chilecentral"`, `ssh_public_key`, `app_hostname`, `object_storage_endpoint`) and `envs/azure/backend.hcl`; `make azure-init && make azure-plan`, review, `make azure-apply` ([terraform.md](terraform.md#runbook-first-apply-on-azure-operator), steps 4–6).
 2. What must come out of it, checked before Ansible: an NSG with 80/tcp, 443/tcp+udp and 8322/tcp open to anyone and 22 from `admin_cidrs` (anywhere by default, key-only SSH); a `Standard_B2ats_v2` VM with a 30 GB Standard SSD; a static public IP (output `public_ip`); `memory_profile = tiny`.
-3. DNS at Namify: A record `api.tetengo` in `reqsai.tech` → `public_ip` (output `dns_record`). Let's Encrypt needs the name to resolve **before** the first deploy (`dig +short api.tetengo.reqsai.tech`).
+3. DNS at Namify: A record `api.tetengo` in `reqsai.tech` → `public_ip` (output `dns_record`). Let's Encrypt needs the name to resolve **before** the first deploy. Check it on Namify's own name servers (`dig +short api.tetengo.reqsai.tech @tech-domains.earth.orderbox-dns.com`), not on a public resolver: the zone caches a missing name for 2 hours (SOA negative TTL 7200 s), so a lookup before the record exists keeps failing on that resolver for up to 2 hours. For the same reason, start the app role (Caddy) only once the record is there; `--tags base,docker,backup` can run before.
 4. First SSH with host-key verification against the boot diagnostics serial log ([terraform.md](terraform.md#runbook-first-apply-on-azure-operator), step 8).
 
 ## 2. Inventory and vault
@@ -21,7 +21,7 @@ cp ansible/group_vars/te_tengo/vault.yml.example ansible/group_vars/te_tengo/vau
 $EDITOR ansible/group_vars/te_tengo/vault.yml    # see "Secrets inventory"
 ansible-vault encrypt ansible/group_vars/te_tengo/vault.yml
 ```
-Set in `ansible/group_vars/te_tengo/vars.yml` (or an untracked `ansible/*.local.yml` passed with `-e @`): `te_tengo_acme_email`, `te_tengo_api_tag`, the SMTP relay (`te_tengo_smtp_host`, `te_tengo_smtp_port`, `te_tengo_smtp_security`, `te_tengo_smtp_sender`; only once the API release supports `smtp`, see [ansible.md](ansible.md#variables)), and `te_tengo_registry_auth: login` + `te_tengo_registry_username` if the GHCR package is private.
+Set in `ansible/group_vars/te_tengo/vars.yml` (or an untracked `ansible/*.local.yml` passed with `-e @`): `te_tengo_acme_email`, `te_tengo_api_tag`, the SMTP relay (`te_tengo_smtp_host`, `te_tengo_smtp_port`, `te_tengo_smtp_security`, `te_tengo_smtp_sender`; only once the API release supports `smtp`, see [ansible.md](ansible.md#variables)), `te_tengo_registry_auth: login` + `te_tengo_registry_username` if the GHCR package is private, and for the PWA its origins in `te_tengo_hls_allow_origins` plus `TT_CORS_ORIGENES`, `TT_PWA_URL` and `TT_ENLACE_BASE` in `te_tengo_api_settings`.
 
 Check access before deploying (the key is the private half of Terraform's `ssh_public_key`; port 22 accepts `admin_cidrs`, anywhere by default):
 ```bash
@@ -39,7 +39,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://api.tetengo.reqsai.tech/vivo/ca
 openssl s_client -connect api.tetengo.reqsai.tech:8322 -servername api.tetengo.reqsai.tech </dev/null | openssl x509 -noout -issuer -enddate   # Let's Encrypt
 make backup-now && ssh ubuntu@<public_ip> sudo journalctl -u te-tengo-backup --no-pager -n 5          # dump uploaded to R2
 ```
-The post-deploy check runs **on the VM against its own public name**. Whether Azure lets a VM reach its own public IP (hairpin) was not verified (no apply yet). If that check times out while the commands above work from outside, deploy with `-e app_verify=false` and report it.
+The post-deploy check runs **on the VM against its own public name**. Azure lets the VM reach its own public IP (hairpin), so the check works (verified on the first deploy). If it ever times out while the commands above work from outside, deploy with `-e app_verify=false` and report it.
 
 On the 1 GiB host the first start is slow (image pulls, Flyway, the JVM with C1 only); the playbook waits up to 15 minutes (`app_compose_wait_timeout`). Check memory after the first day: `ssh ubuntu@<public_ip> 'free -m; sudo docker stats --no-stream'`; the local measurement is in [ansible.md](ansible.md#memory-profiles).
 
