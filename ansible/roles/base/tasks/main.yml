@@ -10,12 +10,20 @@
       {{ te_tengo_memory_profiles.keys() | join(', ') }}.
     quiet: true
 
+# Images that ship without package lists (`rm -rf /var/lib/apt/lists/*`) still look fresh to
+# cache_valid_time, because emptying the directory updates its mtime; refresh them unconditionally.
+- name: Find the APT package lists
+  ansible.builtin.find:
+    paths: /var/lib/apt/lists
+    patterns: "*_Packages*"
+  register: base_apt_lists
+
 - name: Install base packages
   ansible.builtin.apt:
     name: "{{ base_packages }}"
     state: present
     update_cache: true
-    cache_valid_time: 3600
+    cache_valid_time: "{{ 3600 if base_apt_lists.matched > 0 else 0 }}"
 
 - name: Enable unattended upgrades
   ansible.builtin.copy:
