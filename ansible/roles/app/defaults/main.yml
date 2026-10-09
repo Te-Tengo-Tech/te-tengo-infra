@@ -35,6 +35,9 @@ app_memory_profiles: "{{ te_tengo_memory_profiles }}"
 app_api_source: "{{ te_tengo_api_source | default('registry') }}"
 app_api_repository: "{{ te_tengo_api_repository | default('ghcr.io/te-tengo-tech/te-tengo-general-api') }}"
 app_api_tag: "{{ te_tengo_api_tag | default('latest') }}"
+# sha256:<64 hex>: pin the registry image by digest (repository:tag@digest, or repository@digest without a
+# tag). Empty: pull the tag.
+app_api_digest: "{{ te_tengo_api_digest | default('') }}"
 # archive: path ON THE CONTROLLER of a `docker save` file (.tar or .tar.gz) holding app_api_local_image.
 app_api_archive: "{{ te_tengo_api_archive | default('') }}"
 # build: path ON THE CONTROLLER of a te-tengo-general-api git checkout; app_api_build_ref is archived
@@ -47,6 +50,9 @@ app_api_build_timeout: 2700
 app_api_local_image: te-tengo-general-api:local
 # UID of the API image's user (USER 10001 in te-tengo-general-api's Dockerfile); owns the key files.
 app_api_uid: 10001
+
+# Dump the database (backup role's te-tengo-backup.service) before the stack switches to another API image.
+app_backup_before_image_change: "{{ te_tengo_backup_before_image_change | default(true) }}"
 
 app_registry_auth: "{{ te_tengo_registry_auth | default('none') }}"
 app_registry_host: ghcr.io

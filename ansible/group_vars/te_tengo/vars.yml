@@ -34,11 +34,14 @@ te_tengo_dir: /opt/te-tengo
 # Let's Encrypt account e-mail (expiry notices). Required.
 te_tengo_acme_email: ""
 
-# API image: published by te-tengo-general-api's image workflow. Pin a release or commit tag for
-# production deploys (`-e te_tengo_api_tag=sha-<short commit>`); `current` keeps the registry tag the host
-# already runs (production default, prod.yml).
+# API image: published by te-tengo-general-api's release workflows. Production deploys pin the digest of a
+# verified release candidate (`-e te_tengo_api_tag=x.y.z-rc.N -e te_tengo_api_digest=sha256:...`, the image
+# then runs as repository:tag@digest); `current` keeps the tag and digest the host already runs
+# (production default, prod.yml).
 te_tengo_api_repository: ghcr.io/te-tengo-tech/te-tengo-general-api
 te_tengo_api_tag: latest
+# sha256:<64 hex> pins the image by digest (the tag is then only a label); empty pulls the tag.
+te_tengo_api_digest: ""
 # registry (pull te_tengo_api_repository:te_tengo_api_tag), archive (docker load a file from the
 # controller) or build (build on the host from a local checkout).
 te_tengo_api_source: registry
@@ -73,6 +76,9 @@ te_tengo_api_settings: {}
 te_tengo_backup_enabled: true
 te_tengo_backup_on_calendar: "*-*-* 08:30:00"  # 03:30 in Lima (UTC-5)
 te_tengo_backup_keep_local: 7
+# Before the app role switches the running stack to another API image (Flyway migrations are forward-only),
+# it runs te-tengo-backup.service and waits for the dump (roles/app/tasks/backup-before-image-change.yml).
+te_tengo_backup_before_image_change: true
 
 # Public SSH keys added to the ubuntu user (base role), e.g. the deploy key of .github/workflows/deploy.yml.
 # Terraform already installs ssh_public_key (Azure admin SSH key, OCI instance metadata, AWS key pair).

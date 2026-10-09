@@ -1,0 +1,74 @@
+---
+# Flyway migrations are forward-only: before the running stack switches to another API image, dump the
+# database with the backup role's service (te-tengo-backup.service: a local dump in /var/backups/te-tengo,
+# copied to the backups bucket on R2), so a bad release can be undone with te-tengo-restore. Skipped on the
+# first deploy (no stack yet) and when the image does not change (a configuration-only deploy). A failed
+# backup stops the deploy before anything changes.
+- name: Pull the target API image to compare it with the running one
+  ansible.builtin.command:
+    argv: [docker, pull, --quiet, "{{ app_api_image_ref }}"]
+  changed_when: false
+  when: app_api_source == 'registry'
+
+- name: Image of the target API
+  ansible.builtin.command:
+    argv: [docker, image, inspect, --format, "{{ '{{.Id}}' }}", "{{ app_api_image_ref }}"]
+  register: app_target_image_id
+  changed_when: false
+
+- name: Find the running API container
+  ansible.builtin.command:
+    argv: [docker, compose, ps, --quiet, api]
+    chdir: "{{ app_dir }}"
+  register: app_running_api
+  changed_when: false
+  failed_when: false
+
+- name: Image of the running API container
+  ansible.builtin.command:
+    argv: [docker, inspect, --format, "{{ '{{.Image}}' }}", "{{ app_running_api.stdout_lines | first }}"]
+  register: app_running_image_id
+  changed_when: false
+  when: app_running_api.rc == 0 and app_running_api.stdout_lines | length > 0
+
+- name: Decide whether the API image changes
+  ansible.builtin.set_fact:
+    app_api_image_changes: >-
+      {{ app_running_image_id.stdout is defined
+         and app_running_image_id.stdout | trim != app_target_image_id.stdout | trim }}
+
+- name: Back up the database before the new API image starts
+  when: app_api_image_changes | bool
+  block:
+    - name: Require the backup service
+      ansible.builtin.stat:
+        path: /etc/systemd/system/te-tengo-backup.service
+      register: app_backup_unit
+
+    - name: Fail without the backup service
+      ansible.builtin.assert:
+        that: app_backup_unit.stat.exists
+        fail_msg: >-
+          The API image changes but te-tengo-backup.service is not installed, so the database cannot be dumped
+          first. Run the backup role once (make deploy ANSIBLE_ARGS="--tags backup"), or skip the dump with
+          -e te_tengo_backup_before_image_change=false.
+        quiet: true
+
+    - name: Run te-tengo-backup.service and wait for the dump
+      ansible.builtin.command:
+        argv: [systemctl, start, te-tengo-backup.service]
+      changed_when: true
+
+    - name: Newest dump
+      ansible.builtin.shell:
+        cmd: set -o pipefail && ls -1t /var/backups/te-tengo/te-tengo-*.dump | head -n 1
+        executable: /bin/bash
+      register: app_backup_newest
+      changed_when: false
+
+    - name: Show the dump taken before the image change
+      ansible.builtin.debug:
+        msg: >-
+          The API image changes ({{ app_running_image_id.stdout | trim }} -> {{ app_target_image_id.stdout | trim }}):
+          database dumped to {{ app_backup_newest.stdout }} (and to the backups bucket when one is configured)
+          before deploying {{ app_api_image_ref }}.

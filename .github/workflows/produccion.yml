@@ -1,0 +1,220 @@
+name: Produccion
+run-name: Produccion (main, ${{ github.sha }})
+
+# Production of this repository's own changes, on a push to main (the merged release or hotfix pull request):
+# docs/deploy.md, "Release flow".
+#   1. candidate    finds the approved candidate: the newest pre-release vX.Y.Z-rc.N (X.Y.Z = VERSION) whose
+#                   recorded git tree hash equals main's (`git rev-parse HEAD^{tree}`) and whose verification
+#                   passed. None → the run fails: main differs from what was verified.
+#   2. produccion   calls deploy.yml: a configuration-only redeploy of the app role to the Azure VM with the API
+#                   image the host already runs (api_tag empty = current; same image, so no database backup is
+#                   needed). Its deploy job runs in the environment `produccion` (approval) and checks
+#                   /actuator/health. Switch: ENABLE_API_DEPLOY.
+#   3. release      only if production succeeded (or its switch is off): the tag vX.Y.Z on this commit and its
+#                   GitHub Release (notes: the CHANGELOG.md section and the candidate).
+#   4. back-merge   opens the pull request main → develop (`chore: merge release x.y.z back into develop`).
+# If produccion fails there is no tag: fix it and use "Re-run failed jobs". Rollback: rollback.yml.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Shared with rollback.yml: one production change of the configuration at a time, never cancelled.
+concurrency:
+  group: produccion
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  candidate:
+    name: Find the verified candidate of main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      released: ${{ steps.find.outputs.released }}
+      candidate: ${{ steps.find.outputs.candidate }}
+      build: ${{ steps.find.outputs.build }}
+      commit: ${{ steps.find.outputs.commit }}
+      tree: ${{ steps.find.outputs.tree }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Version
+        id: version
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::VERSION must hold x.y.z (found '$version')"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Candidate whose tree hash equals main's
+        id: find
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          tree=$(git rev-parse 'HEAD^{tree}')
+          # Already released from this commit (a full re-run of a successful run): nothing left to do.
+          if released=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" --jq '.object.sha' 2>/dev/null); then
+            if [ "$released" = "$GITHUB_SHA" ]; then
+              echo "released=true" >> "$GITHUB_OUTPUT"
+              echo "::notice title=Already released::v$VERSION already tags $GITHUB_SHA: nothing to deploy or tag."
+              echo "\`v$VERSION\` already tags this commit: nothing to deploy or tag." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "::error title=Version already released::v$VERSION already exists on another commit ($released)." \
+              "A new release needs a new version: release/x.y.z or hotfix/x.y.z with a higher VERSION."
+            exit 1
+          fi
+          field() { sed -n "s/^$1=//p" "$notes" | head -n 1; }
+          notes="$RUNNER_TEMP/notes.md"
+          numbers=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v$VERSION-rc." --jq '.[].ref' \
+            | sed -n "s|^refs/tags/v$VERSION-rc\.\([0-9][0-9]*\)$|\1|p" | sort -rn)
+          for n in $numbers; do
+            gh release view "v$VERSION-rc.$n" -R "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null | tr -d '\r' > "$notes" || continue
+            [ "$(field tree)" = "$tree" ] || continue
+            if [ "$(field verification)" != passed ]; then
+              echo "::warning::v$VERSION-rc.$n has main's tree but its verification is '$(field verification)'; looking at older candidates."
+              continue
+            fi
+            {
+              echo "released=false"
+              echo "candidate=$(field candidate)"
+              echo "build=$(field build)"
+              echo "commit=$(field commit)"
+              echo "tree=$tree"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "## Candidate $(field candidate)"
+              echo "\`main\` (\`$GITHUB_SHA\`) has the tree \`$tree\` of the verified candidate"
+              echo "[\`v$VERSION-rc.$n\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/v$VERSION-rc.$n) (commit \`$(field commit)\`, build $(field build))."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          done
+          message="main differs from the tested candidate; push the change to the release branch to build a new rc."
+          message+=" No verified pre-release v$VERSION-rc.N has the tree $tree of $GITHUB_SHA."
+          echo "::error title=No candidate for main::$message"
+          echo "**No candidate:** $message" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+  produccion:
+    name: Produccion (configuration redeploy)
+    needs: candidate
+    # Switch: ENABLE_API_DEPLOY (deploy.yml gates its deploy job with it too).
+    if: needs.candidate.outputs.released != 'true' && vars.ENABLE_API_DEPLOY == 'true'
+    # deploy.yml's deploy job runs in the environment `produccion` (required reviewers approve there).
+    uses: ./.github/workflows/deploy.yml
+    permissions:
+      contents: read
+      # Requested by deploy.yml's (inactive) AWS job; unused for the Azure target.
+      id-token: write
+    with:
+      target: azure
+      api_tag: ""
+      check_only: false
+      reason: >-
+        te-tengo-infra release ${{ needs.candidate.outputs.version }} (candidate ${{ needs.candidate.outputs.candidate }},
+        commit ${{ github.sha }})
+
+  release:
+    name: Create the release vX.Y.Z
+    needs: [candidate, produccion]
+    # Only when production succeeded (a produccion skipped by its switch counts as done).
+    if: >-
+      !cancelled()
+      && needs.candidate.result == 'success'
+      && needs.candidate.outputs.released != 'true'
+      && (needs.produccion.result == 'success'
+          || (needs.produccion.result == 'skipped' && vars.ENABLE_API_DEPLOY != 'true'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.candidate.outputs.version }}
+      CANDIDATE: ${{ needs.candidate.outputs.candidate }}
+      BUILD: ${{ needs.candidate.outputs.build }}
+      COMMIT: ${{ needs.candidate.outputs.commit }}
+      TREE: ${{ needs.candidate.outputs.tree }}
+      DEPLOYED: ${{ needs.produccion.result == 'success' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Create the tag and the GitHub Release v${{ needs.candidate.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          notes="$RUNNER_TEMP/notes.md"
+          # The CHANGELOG.md section "## [x.y.z] ..." up to the next "## [" heading.
+          awk -v v="$VERSION" '
+            index($0, "## [" v "]") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > "$notes"
+          if ! grep -q '[^[:space:]]' "$notes"; then
+            echo "::warning::CHANGELOG.md has no section [$VERSION]; the release notes point to the file."
+            echo "See [CHANGELOG.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$tag/CHANGELOG.md)." > "$notes"
+          fi
+          if [ "$DEPLOYED" = true ]; then
+            deployed="redeployed to produccion (configuration only, the API image the host already ran)"
+          else
+            deployed="**not deployed** (\`ENABLE_API_DEPLOY\` was off)"
+          fi
+          cat >> "$notes" <<EOF
+
+          ### Candidate
+          Promoted candidate [\`v$CANDIDATE\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/v$CANDIDATE)
+          (build $BUILD, commit \`$COMMIT\`, tree \`$TREE\`); $deployed.
+          EOF
+          gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$tag" --latest --notes-file "$notes"
+          {
+            echo "Created the tag \`$tag\` on \`$GITHUB_SHA\` and its GitHub Release (candidate \`$CANDIDATE\`)."
+            [ "$DEPLOYED" = true ] || echo "**Not deployed:** the organization variable \`ENABLE_API_DEPLOY\` is not \`true\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  back-merge:
+    name: Open the back-merge pull request (main → develop)
+    needs: [candidate, release]
+    if: >-
+      !cancelled()
+      && (needs.release.result == 'success' || needs.candidate.outputs.released == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.candidate.outputs.version }}
+    steps:
+      - name: Open the pull request if develop lacks commits of main
+        run: |
+          set -euo pipefail
+          ahead=$(gh api "repos/$GITHUB_REPOSITORY/compare/develop...main" --jq '.ahead_by')
+          if [ "$ahead" = 0 ]; then
+            echo "develop already has every commit of main: no back-merge needed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          number=$(gh pr list -R "$GITHUB_REPOSITORY" --head main --base develop --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            echo "The back-merge pull request #$number is already open." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          url=$(gh pr create -R "$GITHUB_REPOSITORY" --base develop --head main \
+            --title "chore: merge release $VERSION back into develop" \
+            --body "Brings the release $VERSION (tag \`v$VERSION\`) and any fix made on its release branch back into \`develop\`. Merge with a merge commit.")
+          echo "Opened $url" >> "$GITHUB_STEP_SUMMARY"

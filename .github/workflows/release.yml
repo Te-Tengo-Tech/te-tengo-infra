@@ -1,24 +1,24 @@
 name: Release
 run-name: Release ${{ github.ref_name }}
 
-# Release pipeline of this repository's own changes (Ansible, Compose): docs/deploy.md, "Release flow".
+# Release candidates of this repository's own changes (Ansible, Compose): docs/deploy.md, "Release flow".
 # A push to release/x.y.z or hotfix/x.y.z:
 #   1. check         the version (VERSION) and the static checks of ansible.yml (yamllint, ansible-lint,
 #                    syntax check, docker compose config) on the release commit. No environment.
-#   2. verify        automatic verification, no environment and no approval (there is no staging
-#                    environment: no second VM). The local container harness (make test-all, as the deploy test
-#                    of ansible.yml) deploys the release commit with site.yml to a containerized Ubuntu 24.04
-#                    host capped like the Azure VM, smoke-tests it through Caddy and checks its memory budget.
-#                    The API image is built from te-tengo-general-api's main (the released API). Always runs.
-#   3. produccion    calls deploy.yml: a configuration-only redeploy of the app role to the Azure VM with the
-#                    image the host already runs (te_tengo_api_tag=current). Its deploy job runs in the
-#                    environment `produccion` (approval) and checks /actuator/health.
-#   4. pull-request  opens the pull request release/x.y.z → main (title `release: x.y.z`). Merging it is a
-#                    human action; on main, etiquetar.yml tags vX.Y.Z. There are no deploys on main.
-#
-# Switches (organization variables, Te-Tengo-Tech → Settings → Secrets and variables → Actions → Variables;
-# explicit opt-in, unset means off). A stage that is off is skipped and the check summary says why.
-#   ENABLE_API_DEPLOY   'true' runs the produccion stage (deploy.yml gates its deploy job with it too).
+#   2. verify        automatic verification, no environment and no approval (there is no staging target: no
+#                    second VM). The local container harness (make test-all) deploys the release commit with
+#                    site.yml to a containerized Ubuntu 24.04 host capped like the Azure VM, smoke-tests it
+#                    through Caddy and checks its memory budget. The API on that host is the image in
+#                    production: the digest of GHCR `latest` (te-tengo-general-api moves `latest` only after a
+#                    successful production deploy or rollback). Only when no `latest` can be read (no API
+#                    release deployed yet, or a private package) is it built from te-tengo-general-api's
+#                    develop. Never from the API's main: main only changes when a release is merged, so it
+#                    can lag behind the schema the configuration and the smoke test expect.
+#   3. candidate     records the verified commit as the GitHub pre-release vX.Y.Z-rc.N (N = 1 + the highest
+#                    existing one): commit, git tree hash, the API image it was verified with.
+#   4. pull-request  opens (or updates) the pull request release/x.y.z → main, titled `release: x.y.z`.
+# Nothing is deployed here. After the merge, produccion.yml on main finds the candidate whose tree hash equals
+# main's, redeploys the configuration to production (approval on `produccion`) and only then tags vX.Y.Z.
 on:
   push:
     branches:
@@ -43,8 +43,9 @@ env:
   ANSIBLE_LINT_VERSION: 26.9.0
   YAMLLINT_VERSION: 1.38.0
   ANSIBLE_FORCE_COLOR: "1"
-  # The API the verification host runs: te-tengo-general-api's main, the API release in production.
-  API_REF: main
+  API_IMAGE: ghcr.io/te-tengo-tech/te-tengo-general-api
+  # Fallback API for the verification host when no production image can be read.
+  API_FALLBACK_REF: develop
 
 jobs:
   check:
@@ -89,19 +90,11 @@ jobs:
         if: always()
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          ENABLE_API_DEPLOY: ${{ vars.ENABLE_API_DEPLOY }}
         run: |
-          onoff() { [ "$1" = true ] && echo on || echo "**off**"; }
           {
             echo "## Release $VERSION ($GITHUB_REF_NAME, \`${GITHUB_SHA::7}\`)"
-            echo "| Stage | Switch | State |"
-            echo "|---|---|---|"
-            echo "| Verification (containerized host: deploy, smoke test, memory) | none, always runs | on |"
-            echo "| Produccion (configuration redeploy to the Azure VM, approval on \`produccion\`) | \`ENABLE_API_DEPLOY\` | $(onoff "$ENABLE_API_DEPLOY") |"
-            echo
-            if [ "$ENABLE_API_DEPLOY" != true ]; then
-              echo "- Produccion is **skipped**: the organization variable \`ENABLE_API_DEPLOY\` is not \`true\` (production is frozen)."
-            fi
+            echo "Static checks of the release commit. Next: verification on the containerized host (always runs), the candidate"
+            echo "\`v$VERSION-rc.N\` and the pull request to \`main\`. Production happens after the merge (produccion.yml)."
           } >> "$GITHUB_STEP_SUMMARY"
 
   verify:
@@ -110,21 +103,51 @@ jobs:
     # Always runs; no environment and no approval.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      api: ${{ steps.api.outputs.api || steps.fallback.outputs.api }}
     env:
       TT_API_SRC: ${{ github.workspace }}/te-tengo-general-api
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Check out te-tengo-general-api (${{ env.API_REF }})
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: API image in production (GHCR latest)
+        id: api
+        run: |
+          if digest=$(docker buildx imagetools inspect "$API_IMAGE:latest" --format '{{json .Manifest}}' 2>"$RUNNER_TEMP/latest.err" | jq -r '.digest') \
+            && [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "TT_API_IMAGE_REF=$API_IMAGE@$digest" >> "$GITHUB_ENV"
+            echo "api=$API_IMAGE@$digest (latest: the image in production)" >> "$GITHUB_OUTPUT"
+            echo "source=production" >> "$GITHUB_OUTPUT"
+            echo "The test host runs the API image in production: $API_IMAGE@$digest"
+          else
+            echo "::warning title=No production API image::Could not read $API_IMAGE:latest ($(tr '\n' ' ' < "$RUNNER_TEMP/latest.err" | head -c 300))." \
+              "No API release has been deployed yet, or the package is private: the test host runs te-tengo-general-api $API_FALLBACK_REF instead."
+            echo "source=develop" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check out te-tengo-general-api (${{ env.API_FALLBACK_REF }}, no production image)
+        if: steps.api.outputs.source == 'develop'
         uses: actions/checkout@v7
         with:
           repository: Te-Tengo-Tech/te-tengo-general-api
-          ref: ${{ env.API_REF }}
+          ref: ${{ env.API_FALLBACK_REF }}
           # The API repository is public; API_REPO_TOKEN (read-only Contents) only if it becomes private.
           token: ${{ secrets.API_REPO_TOKEN || github.token }}
           path: te-tengo-general-api
           persist-credentials: false
+      - name: API commit of the fallback
+        id: fallback
+        if: steps.api.outputs.source == 'develop'
+        run: echo "api=te-tengo-general-api $API_FALLBACK_REF at $(git -C te-tengo-general-api rev-parse HEAD) (built from source)" >> "$GITHUB_OUTPUT"
       - name: Install Ansible
         run: |
           pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
@@ -139,12 +162,13 @@ jobs:
         run: make test-memory | tee memory.txt
       - name: Summary
         if: always()
+        env:
+          API: ${{ steps.api.outputs.api || steps.fallback.outputs.api }}
         run: |
           {
             echo "## Verification: containerized host"
-            api_commit=$(git -C te-tengo-general-api rev-parse --short HEAD 2>/dev/null || echo 'not checked out')
             echo "Release commit \`${GITHUB_SHA::7}\` deployed with \`site.yml\` to the test host (Ubuntu 24.04, systemd, SSH,"
-            echo "1 GiB like the Azure VM), API from te-tengo-general-api \`$API_REF\` ($api_commit)."
+            echo "1 GiB like the Azure VM). API: $API."
             echo '```'
             sed -n '/== Summary/,$p' smoke.txt 2>/dev/null || echo "No smoke test output"
             echo '```'
@@ -161,35 +185,68 @@ jobs:
         if: always()
         run: make test-down
 
-  produccion:
-    name: Produccion (configuration redeploy)
+  candidate:
+    name: Record the candidate (pre-release)
     needs: [check, verify]
-    # Switch: ENABLE_API_DEPLOY. The verification must have passed.
-    if: >-
-      !cancelled()
-      && needs.check.result == 'success'
-      && needs.verify.result == 'success'
-      && vars.ENABLE_API_DEPLOY == 'true'
-    # deploy.yml's deploy job runs in the environment `produccion` (required reviewers approve there).
-    uses: ./.github/workflows/deploy.yml
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
-      contents: read
-      # Requested by deploy.yml's (inactive) AWS job; unused for the Azure target.
-      id-token: write
-    with:
-      target: azure
-      api_tag: ""
-      check_only: false
-      reason: te-tengo-infra release ${{ needs.check.outputs.version }} (${{ github.ref_name }}, commit ${{ github.sha }})
+      contents: write
+    outputs:
+      candidate: ${{ steps.create.outputs.candidate }}
+      tree: ${{ steps.create.outputs.tree }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.check.outputs.version }}
+      API: ${{ needs.verify.outputs.api }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Create the pre-release vX.Y.Z-rc.N
+        id: create
+        # The block at the end is read by produccion.yml: keep its key=value lines.
+        run: |
+          set -euo pipefail
+          tree=$(git rev-parse 'HEAD^{tree}')
+          last=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v$VERSION-rc." --jq '.[].ref' \
+            | sed -n "s|^refs/tags/v$VERSION-rc\.\([0-9][0-9]*\)$|\1|p" | sort -n | tail -n 1)
+          candidate="$VERSION-rc.$(( ${last:-0} + 1 ))"
+          notes="$RUNNER_TEMP/notes.md"
+          cat > "$notes" <<EOF
+          Release candidate **$candidate** of te-tengo-infra (final version **$VERSION**, build $GITHUB_RUN_NUMBER) from \`$GITHUB_REF_NAME\`.
+          The candidate is the repository content itself (Ansible, Compose): its identity is the git tree hash.
+
+          | | |
+          |---|---|
+          | Commit | $GITHUB_SHA |
+          | Tree | \`$tree\` |
+          | Verification | passed: \`site.yml\` on the containerized host, smoke test and memory budget, [pipeline run]($RUN_URL) |
+          | API on the test host | $API |
+
+          Production redeploys this configuration after the pull request to \`main\` is merged, if \`main\` has the same tree.
+
+          \`\`\`text
+          candidate=$candidate
+          version=$VERSION
+          build=$GITHUB_RUN_NUMBER
+          commit=$GITHUB_SHA
+          tree=$tree
+          verification=passed
+          \`\`\`
+          EOF
+          gh release create "v$candidate" -R "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+            --title "v$candidate" --notes-file "$notes"
+          {
+            echo "candidate=$candidate"
+            echo "tree=$tree"
+          } >> "$GITHUB_OUTPUT"
+          echo "Recorded the verified commit as the pre-release \`v$candidate\` (tree \`$tree\`)." >> "$GITHUB_STEP_SUMMARY"
 
   pull-request:
     name: Open the release pull request (→ main)
-    needs: [check, verify, produccion]
-    # After every stage that ran passed (a skipped produccion is fine: its switch is off).
-    if: >-
-      !cancelled()
-      && needs.check.result == 'success'
-      && !contains(needs.*.result, 'failure')
+    needs: [check, verify, candidate]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -198,39 +255,39 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.check.outputs.version }}
-      PRODUCCION: ${{ needs.produccion.result }}
+      CANDIDATE: ${{ needs.candidate.outputs.candidate }}
+      TREE: ${{ needs.candidate.outputs.tree }}
+      API: ${{ needs.verify.outputs.api }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Open or update the pull request
         run: |
           set -euo pipefail
           body="$RUNNER_TEMP/body.md"
-          verification="containerized host (\`make test-all\`): \`site.yml\` deployed the release commit, the smoke test through Caddy passed"
-          if [ "$PRODUCCION" = success ]; then
-            produccion="configuration redeploy of the app role to the Azure VM with the API image it already runs (\`current\`),"
-            produccion+=" approved on \`produccion\`; see the run for the health check"
-          else
-            produccion="**not deployed** (\`ENABLE_API_DEPLOY\` is off)"
-          fi
+          release_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/v$CANDIDATE"
           cat > "$body" <<EOF
-          Release **$VERSION** of te-tengo-infra from \`$GITHUB_REF_NAME\` at $GITHUB_SHA.
+          Release **$VERSION** of te-tengo-infra from \`$GITHUB_REF_NAME\`: candidate [\`$CANDIDATE\`]($release_url).
 
-          | Stage | What happened |
+          | | |
           |---|---|
+          | Commit | $GITHUB_SHA |
+          | Tree | \`$TREE\` |
           | Check | version, yamllint, ansible-lint, syntax check, \`docker compose config\` |
-          | Verification | $verification |
-          | Produccion | $produccion |
+          | Verification | containerized host (\`make test-all\`): \`site.yml\` deployed the release commit, the smoke test through Caddy and the memory budget passed |
+          | API on the test host | $API |
+          | Staging | none: there is no second VM |
 
-          Merging this pull request tags \`v$VERSION\` and creates the GitHub Release from CHANGELOG.md (etiquetar.yml),
-          then opens the back-merge into \`develop\`. Nothing is deployed on \`main\`.
+          After the merge, \`produccion.yml\` on \`main\` checks that \`main\` has this tree, redeploys the configuration to the Azure VM
+          with the API image it already runs (approval on \`produccion\`), and only then tags \`v$VERSION\` and opens the back-merge into
+          \`develop\`. A new push to \`$GITHUB_REF_NAME\` records the next candidate and updates this description.
 
           Pipeline run: $RUN_URL
           EOF
           number=$(gh pr list -R "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --base main --state open --json number --jq '.[0].number // empty')
           if [ -n "$number" ]; then
             gh pr edit "$number" -R "$GITHUB_REPOSITORY" --body-file "$body"
-            echo "Updated the description of pull request #$number." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "Updated the description of pull request #$number to candidate $CANDIDATE." | tee -a "$GITHUB_STEP_SUMMARY"
           else
             url=$(gh pr create -R "$GITHUB_REPOSITORY" --base main --head "$GITHUB_REF_NAME" --title "release: $VERSION" --body-file "$body")
-            echo "Opened $url" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "Opened $url for candidate $CANDIDATE." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
