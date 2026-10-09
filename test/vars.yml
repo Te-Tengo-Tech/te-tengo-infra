@@ -1,0 +1,14 @@
+---
+# Test-only overrides, passed as extra vars (-e @test/vars.yml) so they win over group_vars.
+# No cloud account, no real secret: Caddy's internal CA, Floci's S3 for R2, e-mail and push only logged.
+te_tengo_cert_issuer: internal
+te_tengo_acme_email: ops@tetengo.test
+te_tengo_api_source: archive
+te_tengo_api_archive: "{{ playbook_dir }}/../test/.work/te-tengo-general-api.tar"
+te_tengo_push_provider: registro
+# No SMTP relay in the test (te_tengo_smtp_host empty) and no SES sender: TT_CORREO_PROVEEDOR=registro.
+# The API gets no AWS credentials at all: clips are signed only with TT_CLIPS_ACCESS_KEY/SECRET_KEY.
+
+# The test host shares Docker Desktop's kernel: leave its swap and sysctls alone.
+base_manage_swap: false
+base_manage_sysctl: false

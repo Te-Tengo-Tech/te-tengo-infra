@@ -1,0 +1,154 @@
+# Te Tengo stack on one host (Azure x64 VM in production; OCI Ampere A1 or EC2 t4g, arm64, on the
+# inactive alternatives):
+# Caddy (TLS) -> API + MediaMTX, PostgreSQL behind.
+# Ansible (role `app`) installs this file in /opt/te-tengo with a rendered `.env` (the variables
+# below) and `api.env` (the API's TT_ settings); see .env.example and api.env.example.
+# Every setting is required (`:?`) so a missing value stops `docker compose up` instead of starting
+# a half-configured stack.
+name: te-tengo
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  postgres:
+    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE is required}
+    restart: unless-stopped
+    shm_size: 128mb
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:?POSTGRES_SHARED_BUFFERS is required}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:?POSTGRES_EFFECTIVE_CACHE_SIZE is required}
+      - -c
+      - work_mem=${POSTGRES_WORK_MEM:?POSTGRES_WORK_MEM is required}
+      - -c
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:?POSTGRES_MAINTENANCE_WORK_MEM is required}
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:?POSTGRES_MAX_CONNECTIONS is required}
+      - -c
+      - max_wal_size=512MB
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      # PostgreSQL 18 images keep the data in a major-version subdirectory of /var/lib/postgresql.
+      - postgres-data:/var/lib/postgresql
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    mem_limit: ${POSTGRES_MEM_LIMIT:?POSTGRES_MEM_LIMIT is required}
+    logging: *default-logging
+
+  api:
+    image: ${API_IMAGE:?API_IMAGE is required}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - api.env
+    environment:
+      JAVA_TOOL_OPTIONS: ${API_JAVA_OPTS:?API_JAVA_OPTS is required}
+    volumes:
+      # JWT keys and the Firebase key, written by Ansible (0600, owned by the image's user).
+      - ./secrets:/run/secrets/te-tengo:ro
+    networks:
+      - backend
+      - edge
+    healthcheck:
+      # The JRE image has neither curl nor wget: plain HTTP over bash /dev/tcp.
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /actuator/health/readiness HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && grep -q "\"status\":\"UP\"" <&3'
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 300s
+    stop_grace_period: 30s
+    mem_limit: ${API_MEM_LIMIT:?API_MEM_LIMIT is required}
+    logging: *default-logging
+
+  mediamtx:
+    image: ${MEDIAMTX_IMAGE:?MEDIAMTX_IMAGE is required}
+    restart: unless-stopped
+    command: ["/etc/mediamtx/mediamtx.yml"]
+    depends_on:
+      # Healthy means Caddy already holds the certificate that RTSPS serves (see the caddy healthcheck).
+      caddy:
+        condition: service_healthy
+    environment:
+      # MTX_* variables override mediamtx.yml (MediaMTX reads them at startup).
+      MTX_AUTHHTTPADDRESS: http://api:8080/api/interno/mediamtx/autorizar?secreto=${MEDIAMTX_AUTH_SECRET:?MEDIAMTX_AUTH_SECRET is required}
+      # Origins of browser clients (the PWA) allowed to read HLS, comma-separated; `*` for any.
+      MTX_HLSALLOWORIGINS: ${HLS_ALLOW_ORIGINS:?HLS_ALLOW_ORIGINS is required}
+      MTX_RTSPSERVERCERT: /caddy-data/caddy/certificates/${CADDY_CERT_DIR:?CADDY_CERT_DIR is required}/${TT_HOSTNAME:?TT_HOSTNAME is required}/${TT_HOSTNAME}.crt
+      MTX_RTSPSERVERKEY: /caddy-data/caddy/certificates/${CADDY_CERT_DIR}/${TT_HOSTNAME}/${TT_HOSTNAME}.key
+    volumes:
+      - ./mediamtx:/etc/mediamtx:ro
+      # Caddy's certificate store, read-only: RTSPS reuses the certificate Caddy obtains and renews
+      # (MediaMTX watches the files and reloads them when Caddy replaces them).
+      - caddy-data:/caddy-data:ro
+    ports:
+      # RTSPS for the household agent (publish only). HLS (8888) and the control API (9997) are
+      # reachable only inside the `edge` network: Caddy serves HLS at /vivo/, the API calls 9997.
+      - "${RTSPS_PORT:?RTSPS_PORT is required}:8322"
+    networks:
+      - edge
+    mem_limit: ${MEDIAMTX_MEM_LIMIT:?MEDIAMTX_MEM_LIMIT is required}
+    logging: *default-logging
+
+  caddy:
+    image: ${CADDY_IMAGE:?CADDY_IMAGE is required}
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${HTTP_PORT:?HTTP_PORT is required}:80"
+      - "${HTTPS_PORT:?HTTPS_PORT is required}:443"
+      - "${HTTPS_PORT}:443/udp"
+    environment:
+      TT_HOSTNAME: ${TT_HOSTNAME}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+      CADDY_CERT_ISSUER: ${CADDY_CERT_ISSUER:?CADDY_CERT_ISSUER is required}
+      RTSPS_CERT_FILE: /data/caddy/certificates/${CADDY_CERT_DIR}/${TT_HOSTNAME}/${TT_HOSTNAME}.crt
+    volumes:
+      - ./caddy:/etc/caddy:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - edge
+    healthcheck:
+      # Healthy once the site certificate is on disk, so MediaMTX can start RTSPS with it.
+      test: ["CMD-SHELL", "test -s \"$${RTSPS_CERT_FILE}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 300s
+    mem_limit: ${CADDY_MEM_LIMIT:?CADDY_MEM_LIMIT is required}
+    logging: *default-logging
+
+networks:
+  # PostgreSQL only: no route out of the host.
+  backend:
+    internal: true
+  # Caddy, the API and MediaMTX; the API needs egress to R2 (or S3), the SMTP relay (or SES) and Firebase.
+  edge: {}
+
+volumes:
+  postgres-data: {}
+  caddy-data: {}
+  caddy-config: {}

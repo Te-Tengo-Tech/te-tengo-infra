@@ -1,0 +1,127 @@
+---
+- name: Validate the backup storage keys
+  ansible.builtin.assert:
+    that:
+      - backup_access_key_id | length > 0
+      - backup_secret_access_key | length > 0
+    fail_msg: >-
+      object_storage_auth is static (Cloudflare R2) but vault_backup_s3_access_key_id or
+      vault_backup_s3_secret_access_key is empty (an R2 API token with Object Read & Write on the backups bucket).
+    quiet: true
+  when: backup_bucket | length > 0 and backup_object_storage_auth == 'static'
+
+- name: Create the backup directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ backup_dir }}"
+    - /etc/te-tengo
+
+- name: Install the AWS CLI for off-host copies
+  when: backup_bucket | length > 0
+  block:
+    - name: Check for the AWS CLI
+      ansible.builtin.stat:
+        path: /usr/local/bin/aws
+      register: backup_awscli
+
+    - name: Download the AWS CLI v2 installer
+      ansible.builtin.get_url:
+        url: "{{ backup_awscli_url }}"
+        dest: /tmp/awscliv2.zip
+        mode: "0600"
+      when: not backup_awscli.stat.exists
+
+    - name: Unpack the AWS CLI v2 installer
+      ansible.builtin.unarchive:
+        src: /tmp/awscliv2.zip
+        dest: /tmp
+        remote_src: true
+      when: not backup_awscli.stat.exists
+
+    - name: Install the AWS CLI v2
+      ansible.builtin.command:
+        cmd: /tmp/aws/install --update
+        creates: /usr/local/bin/aws
+      when: not backup_awscli.stat.exists
+
+    - name: Remove the AWS CLI installer
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/awscliv2.zip
+        - /tmp/aws
+
+- name: Write the AWS CLI configuration of the backup job
+  ansible.builtin.copy:
+    dest: /etc/te-tengo/aws-config
+    content: |
+      # Managed by Ansible (role backup). Used by te-tengo-backup and te-tengo-restore (AWS_CONFIG_FILE).
+      [default]
+      s3 =
+        addressing_style = {{ 'path' if backup_s3_path_style | bool else 'auto' }}
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Write the backup environment
+  ansible.builtin.copy:
+    dest: /etc/te-tengo/backup.env
+    content: |
+      # Managed by Ansible (role backup).
+      {% for key, value in backup_env | dictsort %}
+      {{ key }}={{ value }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    backup_static_env:
+      AWS_ACCESS_KEY_ID: "{{ backup_access_key_id }}"
+      AWS_SECRET_ACCESS_KEY: "{{ backup_secret_access_key }}"
+      # Recent AWS CLI versions add flexible checksums to every upload; S3-compatible stores such as R2
+      # do not implement all of them, so send them only when the operation requires one.
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+    backup_env: >-
+      {{ {'AWS_DEFAULT_REGION': backup_aws_region, 'AWS_CONFIG_FILE': '/etc/te-tengo/aws-config'}
+         | combine(backup_static_env if backup_object_storage_auth == 'static' else {})
+         | combine(backup_aws_env) }}
+  no_log: true
+
+- name: Install the backup and restore scripts
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /usr/local/sbin/{{ item }}
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - te-tengo-backup
+    - te-tengo-restore
+
+- name: Install the backup systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - te-tengo-backup.service
+    - te-tengo-backup.timer
+  notify: Reload systemd
+
+- name: Flush handlers before enabling the timer
+  ansible.builtin.meta: flush_handlers
+
+- name: Schedule the daily backup
+  ansible.builtin.systemd_service:
+    name: te-tengo-backup.timer
+    enabled: "{{ backup_enabled | bool }}"
+    state: "{{ 'started' if backup_enabled | bool else 'stopped' }}"

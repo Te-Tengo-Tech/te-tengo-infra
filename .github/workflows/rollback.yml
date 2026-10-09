@@ -1,0 +1,77 @@
+name: Rollback
+run-name: Rollback the configuration to ${{ inputs.version }}
+
+# Puts the configuration (Ansible, Compose) of an earlier final release vX.Y.Z back in production, without
+# changing the API image (docs/deploy.md, "Rollback"). It calls deploy.yml with config_ref = vX.Y.Z and the
+# image the host already runs (current); the deploy job waits for approval on `produccion`. To roll back the
+# API image instead, run te-tengo-general-api's Rollback workflow. Switch: ENABLE_API_DEPLOY must be 'true'.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Released version whose configuration goes back to production (x.y.z, a GitHub Release vX.Y.Z)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+# Shared with produccion.yml: one production change of the configuration at a time, never cancelled.
+concurrency:
+  group: produccion
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  resolve:
+    name: Check the release v${{ inputs.version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
+      ENABLE_API_DEPLOY: ${{ vars.ENABLE_API_DEPLOY }}
+    steps:
+      - name: Check the request and the release
+        id: release
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Run the rollback from main (it was started from $GITHUB_REF)."
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be x.y.z (found '$VERSION')"
+            exit 1
+          fi
+          if [ "$ENABLE_API_DEPLOY" != true ]; then
+            echo "::error::The organization variable ENABLE_API_DEPLOY is not 'true': production is frozen, so nothing can be rolled back."
+            exit 1
+          fi
+          if ! gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" --json isPrerelease,isDraft \
+              --jq 'if .isPrerelease or .isDraft then error("not a final release") else "ok" end' >/dev/null; then
+            echo "::error::v$VERSION is not a final GitHub Release of this repository (candidates vX.Y.Z-rc.N cannot be rolled back to)."
+            exit 1
+          fi
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Rolling the configuration back to \`v$VERSION\` (the API image stays the one the host runs)." >> "$GITHUB_STEP_SUMMARY"
+
+  rollback:
+    name: Roll back to ${{ inputs.version }}
+    needs: resolve
+    uses: ./.github/workflows/deploy.yml
+    permissions:
+      contents: read
+      # Requested by deploy.yml's (inactive) AWS job; unused for the Azure target.
+      id-token: write
+    with:
+      target: azure
+      api_tag: ""
+      config_ref: ${{ needs.resolve.outputs.tag }}
+      check_only: false
+      reason: rollback of te-tengo-infra to ${{ needs.resolve.outputs.tag }} by ${{ github.actor }}

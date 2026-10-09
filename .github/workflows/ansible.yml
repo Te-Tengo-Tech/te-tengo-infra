@@ -1,0 +1,146 @@
+name: Ansible
+
+on:
+  pull_request:
+    paths:
+      - ansible/**
+      - compose/**
+      - test/**
+      - ansible.mk
+      - Makefile
+      - .yamllint
+      # make yamllint also lints every workflow file.
+      - .github/workflows/**
+  push:
+    # release/* and hotfix/* too: the release pull request to main is opened by release.yml with GITHUB_TOKEN,
+    # which starts no pull_request run, so its checks come from these pushes (same commit).
+    branches: [develop, main, "release/**", "hotfix/**"]
+    paths:
+      - ansible/**
+      - compose/**
+      - test/**
+      - ansible.mk
+      - Makefile
+      - .yamllint
+      # make yamllint also lints every workflow file.
+      - .github/workflows/**
+  workflow_dispatch:
+    inputs:
+      api_ref:
+        description: te-tengo-general-api branch, tag or commit the test image is built from
+        type: string
+        default: develop
+
+concurrency:
+  group: ansible-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  ANSIBLE_CORE_VERSION: 2.21.5
+  ANSIBLE_LINT_VERSION: 26.9.0
+  YAMLLINT_VERSION: 1.38.0
+  ANSIBLE_FORCE_COLOR: "1"
+
+jobs:
+  lint:
+    name: Lint and validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Ansible, ansible-lint and yamllint
+        run: |
+          pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
+          pipx install "ansible-lint==$ANSIBLE_LINT_VERSION"
+          pipx inject ansible-lint "ansible-core==$ANSIBLE_CORE_VERSION"
+          pipx install "yamllint==$YAMLLINT_VERSION"
+          make galaxy
+
+      - name: yamllint
+        run: make yamllint
+
+      - name: ansible-lint (production profile)
+        run: make ansible-lint
+
+      - name: Syntax check of the playbook
+        working-directory: ansible
+        run: ansible-playbook site.yml --syntax-check -i inventory/hosts.yml.example -e @prod.yml
+
+      - name: docker compose config
+        run: make compose-config
+
+  deploy-test:
+    name: Deploy to a containerized host
+    needs: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      API_REPO_TOKEN: ${{ secrets.API_REPO_TOKEN }}
+      TT_API_SRC: ${{ github.workspace }}/te-tengo-general-api
+    steps:
+      - name: Skip without access to te-tengo-general-api
+        if: env.API_REPO_TOKEN == ''
+        run: |
+          echo "::notice title=Deploy test skipped::Add the API_REPO_TOKEN secret (fine-grained token with" \
+            "read-only Contents on Te-Tengo-Tech/te-tengo-general-api) to build the API image and run make test-all."
+
+      - uses: actions/checkout@v7
+        if: env.API_REPO_TOKEN != ''
+        with:
+          persist-credentials: false
+
+      - name: Check out te-tengo-general-api
+        if: env.API_REPO_TOKEN != ''
+        uses: actions/checkout@v7
+        with:
+          repository: Te-Tengo-Tech/te-tengo-general-api
+          ref: ${{ inputs.api_ref || 'develop' }}
+          token: ${{ secrets.API_REPO_TOKEN }}
+          path: te-tengo-general-api
+          persist-credentials: false
+
+      - name: Install Ansible
+        if: env.API_REPO_TOKEN != ''
+        run: |
+          pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
+          make galaxy
+
+      - name: Start the test host and Floci
+        if: env.API_REPO_TOKEN != ''
+        run: make test-host-up
+
+      - name: Deploy with site.yml
+        if: env.API_REPO_TOKEN != ''
+        run: make test-deploy
+
+      - name: Smoke test
+        if: env.API_REPO_TOKEN != ''
+        run: make test-smoke | tee smoke.txt
+
+      - name: Summary
+        if: always() && env.API_REPO_TOKEN != ''
+        run: |
+          {
+            echo "### Containerized deploy test"
+            echo '```'
+            sed -n '/== Summary/,$p' smoke.txt 2>/dev/null || echo "No smoke test output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Logs of the stack on failure
+        if: failure() && env.API_REPO_TOKEN != ''
+        run: docker exec -w /opt/te-tengo tt-test-host docker compose logs --tail 200 || true
+
+      - name: Tear down
+        if: always() && env.API_REPO_TOKEN != ''
+        run: make test-down

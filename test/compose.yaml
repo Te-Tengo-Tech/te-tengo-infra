@@ -1,0 +1,67 @@
+# Local stand-in for the production host, without any cloud account (make test-host-up / test-down).
+# - host:  Ubuntu 24.04 + systemd + OpenSSH, privileged (Docker-in-Docker), playing the production VM
+#          (Azure Standard_B2ats_v2 by default). Its ports 22/443/80/8322 are published on the Mac as
+#          18022/18443/18081/18322. Its memory is capped like the VM's (TT_TEST_HOST_MEM, 1g by default,
+#          plus swap up to TT_TEST_HOST_MEMSWAP from Docker's own VM): every nested container counts.
+# - floci: local AWS emulator. Its S3 API stands in for Cloudflare R2 (clips and backups, static keys,
+#          path style; region us-east-1, since Floci rejects R2's "auto"), reachable from the host and from the containers inside it as
+#          http://floci.test:4566, and from the Mac on 34566.
+# Ports avoid the ones the developer's own stacks use (8080, 4566, 5432, 8554, 8888, 9997, 443).
+name: tt-infra-test
+
+services:
+  host:
+    build: ./host
+    container_name: tt-test-host
+    hostname: te-tengo-test
+    privileged: true
+    cgroup: private
+    mem_limit: ${TT_TEST_HOST_MEM:-1g}
+    memswap_limit: ${TT_TEST_HOST_MEMSWAP:-3g}
+    tmpfs:
+      - /run
+      - /run/lock
+    volumes:
+      # Docker 29 keeps images in containerd's snapshotter: both stores need a real (non-overlay)
+      # filesystem for the nested overlay mounts.
+      - host-docker:/var/lib/docker
+      - host-containerd:/var/lib/containerd
+    ports:
+      - "127.0.0.1:18022:22"
+      - "127.0.0.1:18443:443/tcp"
+      - "127.0.0.1:18443:443/udp"
+      - "127.0.0.1:18081:80"
+      - "127.0.0.1:18322:8322"
+    networks:
+      - test
+
+  floci:
+    image: floci/floci:2.2.0
+    container_name: tt-test-floci
+    environment:
+      # Verify request signatures (pre-signed URLs included), as Amazon S3 does.
+      FLOCI_AUTH_VALIDATE_SIGNATURES: "true"
+      FLOCI_SERVICES_ECS_RECONCILE_CONTAINERS_ON_STARTUP: "false"
+    ports:
+      - "127.0.0.1:34566:4566"
+    networks:
+      test:
+        # A dotted name: the nested Docker DNS does not forward single-label names to the outer one.
+        aliases:
+          - floci.test
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/4566 && printf "GET /_localstack/health HTTP/1.0\r\n\r\n" >&3 && read -r l <&3 && [[ $$l == *200* ]]'
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+networks:
+  test: {}
+
+volumes:
+  host-docker: {}
+  host-containerd: {}

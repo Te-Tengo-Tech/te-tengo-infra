@@ -1,0 +1,13 @@
+---
+- name: Provision the Te Tengo single-host stack
+  hosts: te_tengo
+  become: true
+  roles:
+    - role: base
+      tags: [base]
+    - role: docker
+      tags: [docker]
+    - role: app
+      tags: [app]
+    - role: backup
+      tags: [backup]

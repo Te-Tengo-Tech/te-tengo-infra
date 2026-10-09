@@ -1,0 +1,99 @@
+---
+- name: Assert a supported operating system
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == "Ubuntu"
+      - ansible_facts['distribution_version'] is version("22.04", ">=")
+      - te_tengo_memory_profile in te_tengo_memory_profiles
+    fail_msg: >-
+      This playbook targets Ubuntu 22.04 or newer, and te_tengo_memory_profile must be one of
+      {{ te_tengo_memory_profiles.keys() | join(', ') }}.
+    quiet: true
+
+# Images that ship without package lists (`rm -rf /var/lib/apt/lists/*`) still look fresh to
+# cache_valid_time, because emptying the directory updates its mtime; refresh them unconditionally.
+- name: Find the APT package lists
+  ansible.builtin.find:
+    paths: /var/lib/apt/lists
+    patterns: "*_Packages*"
+  register: base_apt_lists
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ base_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: "{{ 3600 if base_apt_lists.matched > 0 else 0 }}"
+
+- name: Enable unattended upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure unattended upgrade reboots
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52te-tengo-unattended-upgrades
+    content: |
+      Unattended-Upgrade::Automatic-Reboot "{{ 'true' if base_automatic_reboot_time | length > 0 else 'false' }}";
+      Unattended-Upgrade::Automatic-Reboot-Time "{{ base_automatic_reboot_time | default('04:00', true) }}";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create the journald drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Cap the systemd journal size
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/te-tengo.conf
+    content: |
+      [Journal]
+      SystemMaxUse={{ base_journald_max_use }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald
+
+- name: Configure the swap file
+  ansible.builtin.include_tasks: swap.yml
+  when: base_manage_swap | bool
+
+- name: Tune kernel memory settings
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/60-te-tengo.conf
+    state: present
+    reload: true
+  loop:
+    - { name: vm.swappiness, value: "{{ base_swappiness }}" }
+    - { name: vm.vfs_cache_pressure, value: "50" }
+  loop_control:
+    label: "{{ item.name }}"
+  when: base_manage_sysctl | bool
+
+- name: Open the public ports in the OCI image's host firewall
+  ansible.builtin.include_tasks: firewall.yml
+  when: base_manage_oci_firewall | bool
+
+- name: Authorize extra SSH keys for the remote user
+  ansible.posix.authorized_key:
+    user: "{{ ansible_user | default('ubuntu') }}"
+    key: "{{ item }}"
+    state: present
+  loop: "{{ base_authorized_keys }}"
+  loop_control:
+    label: "{{ item.split() | last }}"
+  tags: [authorized_keys]

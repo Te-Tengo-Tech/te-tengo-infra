@@ -1,0 +1,36 @@
+---
+# OCI hosts only (base_manage_oci_firewall), and only when the image's persistent iptables policy ends
+# in REJECT (Oracle's Ubuntu platform images).
+- name: Read the persistent iptables policy
+  ansible.builtin.slurp:
+    src: "{{ base_host_firewall_rules_file }}"
+  register: base_firewall_rules
+  failed_when: false
+
+- name: Accept the public ports before the REJECT rule
+  when: >-
+    base_firewall_rules.content is defined and
+    (base_firewall_rules.content | b64decode) is search('(?m)^-A INPUT -j REJECT')
+  block:
+    - name: Persist the accept rules in the policy file
+      ansible.builtin.lineinfile:
+        path: "{{ base_host_firewall_rules_file }}"
+        line: "-A INPUT -p {{ item.protocol }} -m state --state NEW -m {{ item.protocol }} --dport {{ item.port }} -j ACCEPT"
+        insertbefore: "^-A INPUT -j REJECT"
+        firstmatch: true
+      loop: "{{ base_host_firewall_ports }}"
+      loop_control:
+        label: "{{ item.port }}/{{ item.protocol }}"
+
+    - name: Accept the public ports in the running policy
+      ansible.builtin.iptables:
+        chain: INPUT
+        action: insert
+        protocol: "{{ item.protocol }}"
+        destination_port: "{{ item.port }}"
+        ctstate: [NEW]
+        jump: ACCEPT
+        comment: te-tengo public port
+      loop: "{{ base_host_firewall_ports }}"
+      loop_control:
+        label: "{{ item.port }}/{{ item.protocol }}"

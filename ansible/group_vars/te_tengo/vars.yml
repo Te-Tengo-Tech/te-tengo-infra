@@ -1,0 +1,85 @@
+---
+# Settings shared by every Te Tengo host. Secrets come from vault.yml (see vault.yml.example).
+
+# --- Terraform -> Ansible interface (docs/interface-terraform-ansible.md) ---------------------------
+# The Terraform-generated inventory (envs/azure, envs/oci or envs/mvp) sets app_hostname, cloud_provider,
+# memory_profile, object_storage_*, clips_s3_bucket, backup_s3_bucket, ses_sender, push_provider,
+# sns_platform_application_arn and live_view_publish_port on the host (aws_region only on AWS). The
+# roles read them through these te_tengo_* names; a hand-written inventory may set the te_tengo_* names
+# directly instead (host variables win over these group defaults).
+te_tengo_hostname: "{{ app_hostname | default('') }}"
+te_tengo_cloud_provider: "{{ cloud_provider | default('aws') }}"
+te_tengo_aws_region: "{{ aws_region | default('') }}"
+te_tengo_memory_profile: "{{ memory_profile | default('small') }}"
+# Object storage of the clips and the dumps: Cloudflare R2 (endpoint, region 'auto', path style, static
+# keys from the vault) or Amazon S3 (no endpoint, the AWS region, the instance role).
+te_tengo_object_storage_endpoint: "{{ object_storage_endpoint | default('') }}"
+te_tengo_object_storage_region: "{{ object_storage_region | default(aws_region | default('')) }}"
+te_tengo_object_storage_path_style: "{{ object_storage_path_style | default(false) }}"
+# static (vault_clips_s3_* and vault_backup_s3_* keys) or instance_role (AWS SDK default chain).
+te_tengo_object_storage_auth: "{{ object_storage_auth | default('instance_role') }}"
+te_tengo_clips_bucket: "{{ clips_s3_bucket | default('') }}"
+te_tengo_backups_bucket: "{{ backup_s3_bucket | default('') }}"
+te_tengo_ses_sender: "{{ ses_sender | default('') }}"
+te_tengo_push_provider: "{{ push_provider | default('fcm') }}"
+te_tengo_sns_platform_application_arn: "{{ sns_platform_application_arn | default('') }}"
+te_tengo_rtsps_port: "{{ live_view_publish_port | default(8322) }}"
+# SMTP relay when te_tengo_smtp_host is set (production), else SES when Terraform verified a sender,
+# else e-mails are only logged.
+te_tengo_mail_provider: >-
+  {{ 'smtp' if te_tengo_smtp_host | length > 0 else ('ses' if te_tengo_ses_sender | length > 0 else 'registro') }}
+# ----------------------------------------------------------------------------------------------------
+
+te_tengo_dir: /opt/te-tengo
+# Let's Encrypt account e-mail (expiry notices). Required.
+te_tengo_acme_email: ""
+
+# API image: published by te-tengo-general-api's release workflows. Production deploys pin the digest of a
+# verified release candidate (`-e te_tengo_api_tag=x.y.z-rc.N -e te_tengo_api_digest=sha256:...`, the image
+# then runs as repository:tag@digest); `current` keeps the tag and digest the host already runs
+# (production default, prod.yml).
+te_tengo_api_repository: ghcr.io/te-tengo-tech/te-tengo-general-api
+te_tengo_api_tag: latest
+# sha256:<64 hex> pins the image by digest (the tag is then only a label); empty pulls the tag.
+te_tengo_api_digest: ""
+# registry (pull te_tengo_api_repository:te_tengo_api_tag), archive (docker load a file from the
+# controller) or build (build on the host from a local checkout).
+te_tengo_api_source: registry
+# none (public package) or login (private package: te_tengo_registry_username + vault_registry_password,
+# a token with read:packages).
+te_tengo_registry_auth: none
+te_tengo_registry_username: ""
+
+te_tengo_postgres_image: postgres:18
+te_tengo_caddy_image: caddy:2.11-alpine
+te_tengo_mediamtx_image: bluenviron/mediamtx:1.21.1
+
+# E-mail through a generic SMTP relay (API TT_CORREO_PROVEEDOR=smtp). Host, port and sender are not
+# secret; vault_smtp_username and vault_smtp_password hold the relay credentials. Empty host: no SMTP.
+te_tengo_smtp_host: ""
+te_tengo_smtp_port: 587
+# starttls (port 587), ssl (implicit TLS, port 465) or none (local relays only).
+te_tengo_smtp_security: starttls
+# "Name <address>" of a sender the relay accepts (its domain verified at the relay), e.g.
+# "Te Tengo <no-responder@tetengo.reqsai.tech>".
+te_tengo_smtp_sender: ""
+
+# Browser origins (scheme://host[:port]) allowed to read the live view over HLS: the PWA's origins, the
+# same as the API's TT_CORS_ORIGENES (set in te_tengo_api_settings). ["*"] allows any origin; native
+# clients send no Origin and are not affected. Playback still needs a token.
+te_tengo_hls_allow_origins: ["*"]
+
+# Extra API settings merged last into api.env (e.g. TT_RETENCION_CLIPS, TT_AGENTE_VERSION_PUBLICADA).
+te_tengo_api_settings: {}
+
+# Daily PostgreSQL dump to te_tengo_backups_bucket (R2 or S3).
+te_tengo_backup_enabled: true
+te_tengo_backup_on_calendar: "*-*-* 08:30:00"  # 03:30 in Lima (UTC-5)
+te_tengo_backup_keep_local: 7
+# Before the app role switches the running stack to another API image (Flyway migrations are forward-only),
+# it runs te-tengo-backup.service and waits for the dump (roles/app/tasks/backup-before-image-change.yml).
+te_tengo_backup_before_image_change: true
+
+# Public SSH keys added to the ubuntu user (base role), e.g. the deploy key of .github/workflows/deploy.yml.
+# Terraform already installs ssh_public_key (Azure admin SSH key, OCI instance metadata, AWS key pair).
+te_tengo_authorized_keys: []

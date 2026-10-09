@@ -1,0 +1,74 @@
+---
+# Inputs. Host-specific values come from the Terraform inventory (te_tengo_*), shared ones from
+# group_vars/te_tengo, secrets from the vault (vault_*).
+app_dir: "{{ te_tengo_dir | default('/opt/te-tengo') }}"
+app_compose_src_dir: "{{ playbook_dir }}/../compose"
+app_compose_wait_timeout: 900
+
+app_public_hostname: "{{ te_tengo_hostname | default('') }}"
+app_acme_email: "{{ te_tengo_acme_email | default('') }}"
+# acme: Let's Encrypt (production). internal: Caddy's own CA (local test host, no Internet).
+app_cert_issuer: "{{ te_tengo_cert_issuer | default('acme') }}"
+app_http_port: "80"
+app_https_port: "443"
+app_rtsps_port: "{{ te_tengo_rtsps_port | default('8322') }}"
+
+app_aws_region: "{{ te_tengo_aws_region | default('') }}"
+app_clips_bucket: "{{ te_tengo_clips_bucket | default('') }}"
+app_object_storage_endpoint: "{{ te_tengo_object_storage_endpoint | default('') }}"
+app_object_storage_region: "{{ te_tengo_object_storage_region | default('') }}"
+app_object_storage_path_style: "{{ te_tengo_object_storage_path_style | default(false) }}"
+# static: TT_CLIPS_ACCESS_KEY / TT_CLIPS_SECRET_KEY from the vault (R2). instance_role: SDK default chain (AWS).
+app_object_storage_auth: "{{ te_tengo_object_storage_auth | default('instance_role') }}"
+app_ses_sender: "{{ te_tengo_ses_sender | default('') }}"
+app_push_provider: "{{ te_tengo_push_provider | default('fcm') }}"
+app_mail_provider: "{{ te_tengo_mail_provider | default('registro') | trim }}"
+app_smtp_host: "{{ te_tengo_smtp_host | default('') }}"
+app_smtp_port: "{{ te_tengo_smtp_port | default(587) }}"
+app_smtp_security: "{{ te_tengo_smtp_security | default('starttls') }}"
+app_smtp_sender: "{{ te_tengo_smtp_sender | default('') }}"
+app_sns_platform_application_arn: "{{ te_tengo_sns_platform_application_arn | default('') }}"
+app_memory_profile: "{{ te_tengo_memory_profile | default('small') }}"
+app_memory_profiles: "{{ te_tengo_memory_profiles }}"
+
+# API image: registry | archive | build.
+app_api_source: "{{ te_tengo_api_source | default('registry') }}"
+app_api_repository: "{{ te_tengo_api_repository | default('ghcr.io/te-tengo-tech/te-tengo-general-api') }}"
+app_api_tag: "{{ te_tengo_api_tag | default('latest') }}"
+# sha256:<64 hex>: pin the registry image by digest (repository:tag@digest, or repository@digest without a
+# tag). Empty: pull the tag.
+app_api_digest: "{{ te_tengo_api_digest | default('') }}"
+# archive: path ON THE CONTROLLER of a `docker save` file (.tar or .tar.gz) holding app_api_local_image.
+app_api_archive: "{{ te_tengo_api_archive | default('') }}"
+# build: path ON THE CONTROLLER of a te-tengo-general-api git checkout; app_api_build_ref is archived
+# (committed content only) and built on the host. app_api_build_dockerfile (controller path) is used
+# when the checkout has no Dockerfile.
+app_api_build_src: "{{ te_tengo_api_build_src | default('') }}"
+app_api_build_ref: "{{ te_tengo_api_build_ref | default('HEAD') }}"
+app_api_build_dockerfile: "{{ te_tengo_api_build_dockerfile | default('') }}"
+app_api_build_timeout: 2700
+app_api_local_image: te-tengo-general-api:local
+# UID of the API image's user (USER 10001 in te-tengo-general-api's Dockerfile); owns the key files.
+app_api_uid: 10001
+
+# Dump the database (backup role's te-tengo-backup.service) before the stack switches to another API image.
+app_backup_before_image_change: "{{ te_tengo_backup_before_image_change | default(true) }}"
+
+app_registry_auth: "{{ te_tengo_registry_auth | default('none') }}"
+app_registry_host: ghcr.io
+app_registry_username: "{{ te_tengo_registry_username | default('') }}"
+
+app_postgres_image: "{{ te_tengo_postgres_image | default('postgres:18') }}"
+app_caddy_image: "{{ te_tengo_caddy_image | default('caddy:2.11-alpine') }}"
+app_mediamtx_image: "{{ te_tengo_mediamtx_image | default('bluenviron/mediamtx:1.21.1') }}"
+app_postgres_db: tetengo
+app_postgres_user: tetengo
+
+app_api_settings: "{{ te_tengo_api_settings | default({}) }}"
+# Browser origins allowed to read the live view (MediaMTX hlsAllowOrigins).
+app_hls_allow_origins: "{{ te_tengo_hls_allow_origins | default(['*']) }}"
+
+# Post-deploy checks over HTTPS, run on the host against its public name.
+app_verify: true
+app_verify_retries: 40
+app_verify_delay: 10

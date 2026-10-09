@@ -1,0 +1,22 @@
+---
+backup_app_dir: "{{ te_tengo_dir | default('/opt/te-tengo') }}"
+backup_enabled: "{{ te_tengo_backup_enabled | default(true) }}"
+backup_dir: /var/backups/te-tengo
+backup_keep_local: "{{ te_tengo_backup_keep_local | default(7) }}"
+backup_on_calendar: "{{ te_tengo_backup_on_calendar | default('*-*-* 08:30:00') }}"
+# Off-host copy: a private bucket in an S3-compatible store, Cloudflare R2 in production (endpoint,
+# region auto, keys from the vault) or Amazon S3 (instance role). Empty keeps the dumps on the host only.
+backup_bucket: "{{ te_tengo_backups_bucket | default('') }}"
+backup_s3_prefix: postgres
+backup_s3_endpoint: "{{ te_tengo_object_storage_endpoint | default('') }}"
+backup_aws_region: "{{ te_tengo_object_storage_region | default('us-east-1', true) }}"
+# static: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from vault_backup_s3_* (an R2 token with Object Read &
+# Write on the backups bucket). instance_role: the AWS SDK default chain.
+backup_s3_path_style: "{{ te_tengo_object_storage_path_style | default(false) }}"
+backup_object_storage_auth: "{{ te_tengo_object_storage_auth | default('instance_role') }}"
+backup_access_key_id: "{{ vault_backup_s3_access_key_id | default('') }}"
+backup_secret_access_key: "{{ vault_backup_s3_secret_access_key | default('') }}"
+# Extra environment of the backup service, merged last.
+backup_aws_env: {}
+backup_awscli_url: >-
+  https://awscli.amazonaws.com/awscli-exe-linux-{{ 'aarch64' if ansible_facts['architecture'] == 'aarch64' else 'x86_64' }}.zip

@@ -1,0 +1,8 @@
+# Optional: the defaults already target `make local-up` (Floci on http://localhost:24566).
+floci_endpoint       = "http://localhost:24566"
+aws_region           = "us-east-1"
+enable_s3_buckets    = true
+enable_ses           = true
+enable_sns           = true
+enable_github_deploy = true
+enable_route53       = true

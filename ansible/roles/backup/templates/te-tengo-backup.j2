@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Managed by Ansible (role backup). Dumps the Te Tengo database and copies it to the S3-compatible
+# backups bucket (Cloudflare R2 or Amazon S3; credentials in /etc/te-tengo/backup.env).
+set -euo pipefail
+umask 077
+
+cd {{ backup_app_dir }}
+
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+target="{{ backup_dir }}/te-tengo-${stamp}.dump"
+partial="${target}.partial"
+trap 'rm -f "${partial}"' EXIT
+
+docker compose exec -T postgres sh -c 'pg_dump --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --format=custom --compress=6' > "${partial}"
+mv "${partial}" "${target}"
+echo "Wrote ${target} ($(du -h "${target}" | cut -f1))"
+
+find {{ backup_dir }} -maxdepth 1 -type f -name 'te-tengo-*.dump' -printf '%T@ %p\n' \
+  | sort -rn | tail -n +{{ (backup_keep_local | int) + 1 }} | cut -d' ' -f2- | xargs -r rm -f --
+{% if backup_bucket | length > 0 %}
+
+/usr/local/bin/aws s3 cp "${target}" "s3://{{ backup_bucket }}/{{ backup_s3_prefix }}/$(basename "${target}")" \
+  --region {{ backup_aws_region }}{{ ' --endpoint-url ' ~ backup_s3_endpoint if backup_s3_endpoint | length > 0 else '' }} --only-show-errors
+echo "Uploaded to s3://{{ backup_bucket }}/{{ backup_s3_prefix }}/$(basename "${target}")"
+{% endif %}
