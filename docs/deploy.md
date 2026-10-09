@@ -1,29 +1,29 @@
 # Deploy runbook (Terraform → Ansible → Compose)
 
-End-to-end procedure to put the Te Tengo backend in production: one **OCI Ampere A1 VM** (Always Free, arm64, Ubuntu 24.04, 1 OCPU / 6 GB) running Caddy, the API, PostgreSQL 18 and MediaMTX with Docker Compose; clips and dumps in **Cloudflare R2**; DNS at **Namify**; e-mail through an **SMTP relay**; push through Firebase. **Not run yet**: it needs the OCI account, the R2 buckets and tokens, the DNS record, the Firebase key, the SMTP relay and a published API image. Infrastructure details: [terraform.md](terraform.md); host and stack details: [ansible.md](ansible.md); handoff contract: [interface-terraform-ansible.md](interface-terraform-ansible.md). The AWS alternative (`envs/mvp`, SSH over SSM) is inactive; its differences are noted where they matter.
+End-to-end procedure to put the Te Tengo backend in production: one **Azure VM** (`Standard_B2ats_v2`, 2 vCPU AMD, 1 GiB, Ubuntu 24.04 x64, Azure for Students subscription, region `chilecentral`) running Caddy, the API, PostgreSQL 18 and MediaMTX with Docker Compose under the `tiny` memory profile; clips and dumps in **Cloudflare R2**; DNS at **Namify**; e-mail through an **SMTP relay**; push through Firebase. **Not run yet**: it needs the Terraform apply, the R2 buckets and tokens, the DNS record, the Firebase key, the SMTP relay and a published API image. Infrastructure details: [terraform.md](terraform.md); host and stack details: [ansible.md](ansible.md); handoff contract: [interface-terraform-ansible.md](interface-terraform-ansible.md). The inactive alternatives (`envs/oci`, plain SSH like Azure; `envs/mvp`, SSH over SSM) are noted where they differ.
 
 ## 0. Prerequisites (operator machine)
-- Terraform ≥ 1.10, Ansible core ≥ 2.18 (`make galaxy` for the collections), Docker (for the local test), `jq`, `openssl`, an OpenSSH key pair.
-- An OCI API signing key in `~/.oci/config`, the R2 buckets and tokens ([terraform.md](terraform.md#runbook-first-apply-on-oci-operator), steps 1–3).
-- An API image in `ghcr.io/te-tengo-tech/te-tengo-general-api` built for **linux/arm64** (te-tengo-general-api release workflow). Note its tag.
-- Before touching the cloud, run the whole thing locally: `make test-all TT_API_SRC=../te-tengo-general-api` (same SSH path and R2-style storage; see [ansible.md](ansible.md#local-test-without-a-cloud-account-test)).
+- Terraform ≥ 1.10, the Azure CLI, Ansible core ≥ 2.18 (`make galaxy` for the collections), Docker (for the local test), `jq`, `openssl`, an OpenSSH key pair.
+- `az login` done with the Azure for Students account, the R2 buckets and tokens ([terraform.md](terraform.md#runbook-first-apply-on-azure-operator), steps 1–3).
+- An API image in `ghcr.io/te-tengo-tech/te-tengo-general-api` built for **linux/amd64** (te-tengo-general-api image workflow; it publishes amd64 and arm64). Note its tag.
+- Before touching the cloud, run the whole thing locally: `make test-all TT_API_SRC=../te-tengo-general-api` (same SSH path, R2-style storage, the `tiny` profile and the host capped at 1 GiB; see [ansible.md](ansible.md#local-test-without-a-cloud-account-test)).
 
-## 1. Infrastructure (Terraform, envs/oci)
-1. Fill `envs/oci/terraform.tfvars` and `envs/oci/backend.hcl`; `make oci-init && make oci-plan`, review, `make oci-apply` ([terraform.md](terraform.md#runbook-first-apply-on-oci-operator), steps 4–6).
-2. What must come out of it, checked before Ansible: security list with 80/tcp, 443/tcp+udp and 8322/tcp open to anyone and **22 only from `admin_cidrs`**; the default security list emptied; the A1 instance with 1 OCPU / 6 GB and a 50 GB boot volume; a public IP (output `public_ip`).
+## 1. Infrastructure (Terraform, envs/azure)
+1. `az login`; fill `envs/azure/terraform.tfvars` (`subscription_id` from `az account show --query id -o tsv`, `location = "chilecentral"`, `ssh_public_key`, `app_hostname`, `object_storage_endpoint`) and `envs/azure/backend.hcl`; `make azure-init && make azure-plan`, review, `make azure-apply` ([terraform.md](terraform.md#runbook-first-apply-on-azure-operator), steps 4–6).
+2. What must come out of it, checked before Ansible: an NSG with 80/tcp, 443/tcp+udp and 8322/tcp open to anyone and 22 from `admin_cidrs` (anywhere by default, key-only SSH); a `Standard_B2ats_v2` VM with a 30 GB Standard SSD; a static public IP (output `public_ip`); `memory_profile = tiny`.
 3. DNS at Namify: A record `api.tetengo` in `reqsai.tech` → `public_ip` (output `dns_record`). Let's Encrypt needs the name to resolve **before** the first deploy (`dig +short api.tetengo.reqsai.tech`).
-4. First SSH with host-key verification ([terraform.md](terraform.md#runbook-first-apply-on-oci-operator), step 8).
+4. First SSH with host-key verification against the boot diagnostics serial log ([terraform.md](terraform.md#runbook-first-apply-on-azure-operator), step 8).
 
 ## 2. Inventory and vault
 ```bash
-make inventory                                   # ansible/inventory/hosts.yml from envs/oci outputs (git-ignored)
+make inventory                                   # ansible/inventory/hosts.yml from envs/azure outputs (git-ignored)
 cp ansible/group_vars/te_tengo/vault.yml.example ansible/group_vars/te_tengo/vault.yml
 $EDITOR ansible/group_vars/te_tengo/vault.yml    # see "Secrets inventory"
 ansible-vault encrypt ansible/group_vars/te_tengo/vault.yml
 ```
 Set in `ansible/group_vars/te_tengo/vars.yml` (or an untracked `ansible/*.local.yml` passed with `-e @`): `te_tengo_acme_email`, `te_tengo_api_tag`, the SMTP relay (`te_tengo_smtp_host`, `te_tengo_smtp_port`, `te_tengo_smtp_security`, `te_tengo_smtp_sender`; only once the API release supports `smtp`, see [ansible.md](ansible.md#variables)), and `te_tengo_registry_auth: login` + `te_tengo_registry_username` if the GHCR package is private.
 
-Check access before deploying (from an address in `admin_cidrs`; the key is the private half of Terraform's `ssh_public_key`):
+Check access before deploying (the key is the private half of Terraform's `ssh_public_key`; port 22 accepts `admin_cidrs`, anywhere by default):
 ```bash
 cd ansible && ansible te_tengo -m ansible.builtin.ping --ask-vault-pass
 ```
@@ -32,56 +32,61 @@ cd ansible && ansible te_tengo -m ansible.builtin.ping --ask-vault-pass
 ```bash
 make deploy ANSIBLE_ARGS="-e te_tengo_api_tag=<tag>"
 ```
-It installs the base packages, swap, opens the stack's ports in the OCI image's iptables policy, Docker, the stack and the backup timer, then verifies over HTTPS from the host: health `UP` with HSTS, HLS 401 without a token, internal and Swagger endpoints 404. From your machine:
+It installs the base packages, the 2 GiB swap file of the `tiny` profile, Docker, the stack and the backup timer (on the inactive OCI alternative it also opens the stack's ports in the OCI image's iptables policy; on Azure the NSG is the only firewall and those tasks are skipped), then verifies over HTTPS from the host: health `UP` with HSTS, HLS 401 without a token, internal and Swagger endpoints 404. From your machine:
 ```bash
 curl -fsS https://api.tetengo.reqsai.tech/actuator/health
 curl -s -o /dev/null -w '%{http_code}\n' https://api.tetengo.reqsai.tech/vivo/camaras/x/index.m3u8      # 401
 openssl s_client -connect api.tetengo.reqsai.tech:8322 -servername api.tetengo.reqsai.tech </dev/null | openssl x509 -noout -issuer -enddate   # Let's Encrypt
 make backup-now && ssh ubuntu@<public_ip> sudo journalctl -u te-tengo-backup --no-pager -n 5          # dump uploaded to R2
 ```
-The post-deploy check runs **on the VM against its own public name**. Whether OCI routes a VM's connection to its own public IP back through the internet gateway was not verified (no account yet). If that check times out while the commands above work from outside, deploy with `-e app_verify=false` and report it.
+The post-deploy check runs **on the VM against its own public name**. Whether Azure lets a VM reach its own public IP (hairpin) was not verified (no apply yet). If that check times out while the commands above work from outside, deploy with `-e app_verify=false` and report it.
+
+On the 1 GiB host the first start is slow (image pulls, Flyway, the JVM with C1 only); the playbook waits up to 15 minutes (`app_compose_wait_timeout`). Check memory after the first day: `ssh ubuntu@<public_ip> 'free -m; sudo docker stats --no-stream'`; the local measurement is in [ansible.md](ansible.md#memory-profiles).
 
 Then seed the first household installation (`scripts/create-installation.sh` of the API, run against the host's PostgreSQL: `docker compose exec -T postgres psql -U tetengo -d tetengo` in `/opt/te-tengo`).
 
 ## 4. Continuous deploys (GitHub Actions, `deploy.yml`)
-Manual workflow **Deploy** (`workflow_dispatch`; inputs `target` = `oci` (default) or `aws`, `api_tag`, optional check mode) → `ansible-playbook site.yml --tags app` → public health check. No Terraform runs in it. It is inert (a notice, no job) until the chosen GitHub environment is configured.
+Manual workflow **Deploy** (`workflow_dispatch`; inputs `target` = `azure` (default), `oci` or `aws`, `api_tag`, optional check mode) → `ansible-playbook site.yml --tags app` → public health check. No Terraform runs in it. It is inert (a notice, no job) until the chosen GitHub environment is configured.
 
-**Target `oci`, GitHub environment `prod`:** plain SSH with a dedicated key; the VM's host key is **pinned** (`StrictHostKeyChecking=yes` with the known-hosts line below), so a replaced or impersonated host stops the deploy.
+**Target `azure`, GitHub environment `prod`:** plain SSH with a dedicated key; the VM's host key is **pinned** (`StrictHostKeyChecking=yes` with the known-hosts line below), so a replaced or impersonated host stops the deploy. The NSG accepts SSH from anywhere by default, so the GitHub-hosted runner reaches port 22 directly; authentication is key-only.
 
 | Kind | Name | Value |
 |---|---|---|
 | variable | `APP_URL` | Terraform output `app_url` (`https://api.tetengo.reqsai.tech`) |
-| variable | `ANSIBLE_INVENTORY` | `terraform -chdir=envs/oci output -raw ansible_inventory` (no secrets in it) |
-| variable | `OCI_SSH_KNOWN_HOSTS` | `ssh-keyscan -t ed25519 <public_ip>` **after** verifying the fingerprint (terraform.md, step 8), e.g. `192.0.2.10 ssh-ed25519 AAAA...` |
-| variable | `DEPLOY_RUNNER` | optional: label of a self-hosted runner (see below); default `ubuntu-24.04` |
+| variable | `ANSIBLE_INVENTORY` | `terraform -chdir=envs/azure output -raw ansible_inventory` (no secrets in it) |
+| variable | `SSH_KNOWN_HOSTS` | `ssh-keyscan -t ed25519 <public_ip>` **after** verifying the fingerprint (terraform.md, step 8), e.g. `192.0.2.10 ssh-ed25519 AAAA...` |
+| variable | `DEPLOY_RUNNER` | optional: label of a self-hosted runner (only needed with a narrowed `admin_cidrs`); default `ubuntu-24.04` |
 | secret | `ANSIBLE_VAULT_B64` | `base64 < ansible/group_vars/te_tengo/vault.yml` (the encrypted file) |
 | secret | `ANSIBLE_VAULT_PASSWORD` | the vault password |
 | secret | `DEPLOY_SSH_PRIVATE_KEY` | private half of a dedicated ed25519 key; its public half goes to `te_tengo_authorized_keys` as `no-agent-forwarding,no-port-forwarding,no-X11-forwarding ssh-ed25519 AAAA... te-tengo-deploy` and one operator run of `make deploy` (`--tags base` is enough) |
 
-**Reaching port 22 from the runner.** The security list only lets `admin_cidrs` reach SSH, and GitHub-hosted runners have no fixed address. Options, cheapest first:
+**If `admin_cidrs` is narrowed** (and always on the OCI alternative, whose `admin_cidrs` has no default), GitHub-hosted runners, which have no fixed address, can no longer reach port 22. Options, cheapest first:
 1. Run the workflow on a **self-hosted runner** whose public IP is in `admin_cidrs` (the operator's machine or another always-on box): register it, set `DEPLOY_RUNNER` to its label. It needs `pipx`, `curl` and `jq`.
-2. Deploy from the operator's machine with `make redeploy ANSIBLE_ARGS="-e te_tengo_api_tag=<tag>"` (same playbook, same result) and use the workflow only once 1 is in place.
-3. Add the runner's address to `admin_cidrs` for the deploy and remove it afterwards (`terraform apply` from the operator's machine). Opening 22 to `0.0.0.0/0` is **not** recommended, even with key-only SSH.
-A temporary security-list rule managed from the workflow (OCI CLI with an API key stored in GitHub) or the OCI Bastion service would also work, but each needs OCI credentials in GitHub; not implemented.
+2. Deploy from the operator's machine with `make redeploy ANSIBLE_ARGS="-e te_tengo_api_tag=<tag>"` (same playbook, same result).
+3. Add the runner's address to `admin_cidrs` for the deploy and remove it afterwards (`terraform apply` from the operator's machine).
+A temporary NSG rule managed from the workflow (Azure credentials through GitHub OIDC) or Azure Bastion would also work; neither is implemented (Bastion is a paid resource).
+
+**Target `oci`, GitHub environment `oci` (inactive):** the same SSH job with the variables and secrets above in the `oci` environment, `ANSIBLE_INVENTORY` from `envs/oci`.
 
 Protect the environment with required reviewers.
 
 **Target `aws`, GitHub environment `mvp` (inactive):** OIDC → the Terraform deploy role → SSH over SSM. Variables `AWS_DEPLOY_ROLE_ARN` (output `github_deploy_role_arn`), `AWS_REGION`, `EC2_INSTANCE_ID` (output `instance_id`), `APP_URL`, `ANSIBLE_INVENTORY` (from `envs/mvp`); the same three secrets, with the deploy key restricted to the SSM tunnel (`from="127.0.0.1,::1",...`). The session name `te-tengo-mvp-deploy-<run id>` is required by the role's policy.
 
 ## 5. Operations
-- Shell and logs: `ssh ubuntu@<public_ip>` (from `admin_cidrs`), then `cd /opt/te-tengo && sudo docker compose logs -f api`.
+- Shell and logs: `ssh ubuntu@<public_ip>`, then `cd /opt/te-tengo && sudo docker compose logs -f api`.
 - Restart one service: `sudo docker compose restart api`. Configuration changes go through Ansible (`make redeploy`), never by editing `/opt/te-tengo` by hand.
 - Backups: daily at 03:30 Lima (`systemctl list-timers te-tengo-backup.timer`); on demand `make backup-now`; last 7 dumps in `/var/backups/te-tengo`, every dump in `s3://te-tengo-backups/postgres/` on R2 (expiry: the R2 lifecycle rule, if you created it).
 - Restore: `sudo te-tengo-restore /var/backups/te-tengo/te-tengo-<stamp>.dump` or `sudo te-tengo-restore latest` (newest dump in R2; the backups token can read). It stops the API, recreates the database, restores and starts the API. Test a restore after the first week.
-- Free-tier watch: the VM's memory metric during the first week (idle reclamation, [terraform.md](terraform.md#cost-what-is-free-and-why)), R2 usage in the Cloudflare dashboard (10 GB-month free).
+- Credit watch: the remaining Azure for Students credit and its use per service on the [Azure Sponsorships balance page](https://www.microsoftazuresponsorships.com/balance) after the first week and every month (the VM hours should not appear; the IP and the disk do; [terraform.md](terraform.md#cost-what-the-credit-pays)); R2 usage in the Cloudflare dashboard (10 GB-month free).
+- Memory: `free -m` and `sudo docker stats --no-stream` on the host; `swapon --show` shows the 2 GiB swap file. If the API restarts with `OutOfMemoryError` or the host swaps constantly, resize to `Standard_B2als_v2` ([terraform.md](terraform.md#runbook-first-apply-on-azure-operator), *Resize*).
 
 ## 6. Rollback
 | What broke | Rollback |
 |---|---|
-| A new API image | Re-run **Deploy MVP** (or `make redeploy ANSIBLE_ARGS="-e te_tengo_api_tag=<previous tag>"`) with the previous tag. Flyway migrations are forward-only: if the bad release migrated the schema, restore the dump taken before it (the deploy does not take one: run `make backup-now` before any release with a migration). |
+| A new API image | Re-run **Deploy** (or `make redeploy ANSIBLE_ARGS="-e te_tengo_api_tag=<previous tag>"`) with the previous tag. Flyway migrations are forward-only: if the bad release migrated the schema, restore the dump taken before it (the deploy does not take one: run `make backup-now` before any release with a migration). |
 | Configuration (Caddyfile, mediamtx.yml, env) | Revert the commit in this repository and redeploy the app role; handlers reload Caddy and restart MediaMTX/API. |
 | Data | `te-tengo-restore` with the latest good dump (see above). |
-| The host | Terraform recreates the instance (`terraform -chdir=envs/oci apply -replace=module.te_tengo.oci_core_instance.app`), then update the A record at Namify if the ephemeral IP changed, refresh `OCI_SSH_KNOWN_HOSTS` (new host key), `make inventory && make deploy` and restore the last dump from R2 (`te-tengo-restore latest`). Caddy gets a new certificate (Let's Encrypt rate limits: 5 duplicate certificates per week). |
+| The host | Terraform recreates the VM (`terraform -chdir=envs/azure apply -replace=module.te_tengo.azurerm_linux_virtual_machine.app`; the static IP stays, so the A record at Namify stays valid), refresh `SSH_KNOWN_HOSTS` (new host key), `make inventory && make deploy` and restore the last dump from R2 (`te-tengo-restore latest`). Caddy gets a new certificate (Let's Encrypt rate limits: 5 duplicate certificates per week). |
 | Certificate | Caddy renews by itself; if RTSPS still serves an old certificate, `sudo docker compose restart mediamtx`. |
 
 ## Secrets inventory
@@ -98,7 +103,8 @@ Protect the environment with required reviewers.
 | GHCR token (`vault_registry_password`) | Ansible Vault | Docker credential store of root | Only if the package is private |
 | Vault password | Password manager; GitHub secret `ANSIBLE_VAULT_PASSWORD` | — | `ansible-vault rekey`, update the secret |
 | Deploy SSH key | GitHub secret `DEPLOY_SSH_PRIVATE_KEY`; public half in `te_tengo_authorized_keys` | `~ubuntu/.ssh/authorized_keys` | New pair, run the base role, update the secret, remove the old key |
-| Operator SSH key | Operator's machine; public half in Terraform's `ssh_public_key` (instance metadata) | `~ubuntu/.ssh/authorized_keys` | Add the new key with `te_tengo_authorized_keys`, then remove the old line by hand |
-| OCI API signing key | Operator's `~/.oci/config` | — | Add a new key in the console, update the config, delete the old key |
-| Cloud credentials on the host | **None**: no OCI or AWS credentials (AWS alternative: instance role through IMDSv2; GitHub uses OIDC) | — | — |
+| Operator SSH key | Operator's machine; public half in Terraform's `ssh_public_key` (VM `admin_ssh_key`) | `~ubuntu/.ssh/authorized_keys` | Add the new key with `te_tengo_authorized_keys`, then remove the old line by hand |
+| Azure CLI login | Operator's `~/.azure` (token cache of `az login`) | — | `az logout` / `az login`; nothing Azure-related is stored in GitHub |
+| OCI API signing key (inactive alternative) | Operator's `~/.oci/config` | — | Add a new key in the console, update the config, delete the old key |
+| Cloud credentials on the host | **None**: no Azure, OCI or AWS credentials (no managed identity; AWS alternative: instance role through IMDSv2, GitHub uses OIDC) | — | — |
 | TLS private key | Generated by Caddy | `caddy-data` volume (MediaMTX reads it read-only) | Automatic with renewal |

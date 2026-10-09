@@ -1,0 +1,6 @@
+#cloud-config
+# Only what Ansible needs to take over: Python 3 for its modules. Docker, swap, the firewall
+# openings and the stack are Ansible's job (docs/ansible.md).
+package_update: true
+packages:
+  - python3

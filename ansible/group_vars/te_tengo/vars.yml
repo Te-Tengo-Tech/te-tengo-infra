@@ -2,7 +2,7 @@
 # Settings shared by every Te Tengo host. Secrets come from vault.yml (see vault.yml.example).
 
 # --- Terraform -> Ansible interface (docs/interface-terraform-ansible.md) ---------------------------
-# The Terraform-generated inventory (envs/oci or envs/mvp) sets app_hostname, cloud_provider,
+# The Terraform-generated inventory (envs/azure, envs/oci or envs/mvp) sets app_hostname, cloud_provider,
 # memory_profile, object_storage_*, clips_s3_bucket, backup_s3_bucket, ses_sender, push_provider,
 # sns_platform_application_arn and live_view_publish_port on the host (aws_region only on AWS). The
 # roles read them through these te_tengo_* names; a hand-written inventory may set the te_tengo_* names
@@ -69,5 +69,5 @@ te_tengo_backup_on_calendar: "*-*-* 08:30:00"  # 03:30 in Lima (UTC-5)
 te_tengo_backup_keep_local: 7
 
 # Public SSH keys added to the ubuntu user (base role), e.g. the deploy key of .github/workflows/deploy.yml.
-# Terraform already installs ssh_public_key (OCI instance metadata, AWS key pair).
+# Terraform already installs ssh_public_key (Azure admin SSH key, OCI instance metadata, AWS key pair).
 te_tengo_authorized_keys: []

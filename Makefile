@@ -3,12 +3,15 @@ SHELL := /bin/bash
 
 # ----------------------------------------------------------------------------
 # Terraform (bootstrap/, envs/, modules/) — docs/terraform.md
-# Active environment: envs/oci (Oracle Cloud Always Free). envs/mvp (AWS) is an inactive alternative,
-# exercised only against the Floci emulator through envs/local.
+# Active environment: envs/azure (Microsoft Azure, Azure for Students). envs/oci (Oracle Cloud Always
+# Free) and envs/mvp (AWS) are inactive alternatives; envs/mvp is exercised against the Floci emulator
+# through envs/local.
 # ----------------------------------------------------------------------------
 
 TF              ?= terraform
-TF_DIRS         := bootstrap modules/te-tengo modules/te-tengo-oci envs/oci envs/mvp envs/local
+TF_DIRS         := bootstrap modules/te-tengo modules/te-tengo-oci modules/te-tengo-azure envs/azure envs/oci envs/mvp envs/local
+TF_TEST_DIRS    := modules/te-tengo-azure modules/te-tengo-oci
+AZURE_DIR       := envs/azure
 OCI_DIR         := envs/oci
 MVP_DIR         := envs/mvp
 LOCAL_DIR       := envs/local
@@ -33,7 +36,7 @@ LOCAL_ENV := env -u AWS_PROFILE -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u
 
 .PHONY: help fmt fmt-check validate tf-test lint security check \
 	local-up local-down local-init local-plan local-apply local-destroy local-test \
-	inventory oci-init oci-plan oci-apply mvp-init mvp-plan
+	inventory azure-init azure-plan azure-apply oci-init oci-plan oci-apply mvp-init mvp-plan
 
 help: ## List the targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -44,18 +47,21 @@ fmt: ## Format every Terraform file
 fmt-check: ## Fail if a Terraform file is not formatted
 	$(TF) fmt -recursive -check -diff
 
-validate: ## terraform validate every configuration (no backend, no AWS calls)
+validate: ## terraform validate every configuration (no backend, no cloud calls)
 	@set -e; for dir in $(TF_DIRS); do \
 		echo "==> $$dir"; \
 		$(TF) -chdir=$$dir init -backend=false -input=false >/dev/null; \
 		$(TF) -chdir=$$dir validate; \
 	done
 
-tf-test: ## terraform test of the OCI module with a mocked provider (no tenancy, no credentials)
-	$(TF) -chdir=modules/te-tengo-oci init -backend=false -input=false >/dev/null
-	$(TF) -chdir=modules/te-tengo-oci test
+tf-test: ## terraform test of the Azure and OCI modules with mocked providers (no account, no credentials)
+	@set -e; for dir in $(TF_TEST_DIRS); do \
+		echo "==> $$dir"; \
+		$(TF) -chdir=$$dir init -backend=false -input=false >/dev/null; \
+		$(TF) -chdir=$$dir test; \
+	done
 
-lint: ## tflint (terraform + aws rulesets) through Docker
+lint: ## tflint (terraform, aws and azurerm rulesets) through Docker
 	docker run --rm -v "$(CURDIR):/data" -w /data \
 		-v te-tengo-tflint-plugins:/plugins -e TFLINT_PLUGIN_DIR=/plugins \
 		--entrypoint sh $(TFLINT_IMAGE) -c \
@@ -95,9 +101,9 @@ local-destroy: local-init ## Destroy envs/local in Floci
 
 local-test: local-up local-apply local-destroy ## Floci round trip: up, apply, destroy
 
-inventory: ## Write ansible/inventory/hosts.yml from the envs/oci outputs (ENV_DIR=envs/mvp or envs/local for the others)
+inventory: ## Write ansible/inventory/hosts.yml from the envs/azure outputs (ENV_DIR=envs/oci, envs/mvp or envs/local for the others)
 	@mkdir -p $(ANSIBLE_DIR)/inventory
-	$(TF) -chdir=$(or $(ENV_DIR),$(OCI_DIR)) output -raw ansible_inventory > $(ANSIBLE_DIR)/inventory/hosts.yml
+	$(TF) -chdir=$(or $(ENV_DIR),$(AZURE_DIR)) output -raw ansible_inventory > $(ANSIBLE_DIR)/inventory/hosts.yml
 	@echo "Wrote $(ANSIBLE_DIR)/inventory/hosts.yml"
 
 # Applies are for an operator at a terminal, never for CI: CI only formats, validates, tests and lints
@@ -106,7 +112,24 @@ inventory: ## Write ansible/inventory/hosts.yml from the envs/oci outputs (ENV_D
 NOT_IN_CI = @if [ -n "$$CI" ] || [ -n "$$GITHUB_ACTIONS" ]; then \
 	echo "Refusing to run '$@' in CI: applies of real environments are run by an operator (docs/terraform.md)." >&2; exit 1; fi
 
-oci-init: ## Init envs/oci: R2 state with envs/oci/backend.hcl, or local state with envs/oci/backend_override.tf
+azure-init: ## Init envs/azure: R2 state with envs/azure/backend.hcl, or local state with envs/azure/backend_override.tf
+	@if [ -f $(AZURE_DIR)/backend_override.tf ]; then \
+		$(TF) -chdir=$(AZURE_DIR) init -input=false; \
+	else \
+		test -f $(AZURE_DIR)/backend.hcl || { echo "Copy $(AZURE_DIR)/backend.hcl.example to backend.hcl (or create backend_override.tf for local state)" >&2; exit 1; }; \
+		$(TF) -chdir=$(AZURE_DIR) init -input=false -backend-config=backend.hcl; \
+	fi
+
+azure-plan: ## Plan envs/azure (real Azure subscription after `az login`; review before azure-apply, see docs/terraform.md)
+	$(TF) -chdir=$(AZURE_DIR) plan -input=false -out=tfplan
+
+azure-apply: ## Apply the reviewed envs/azure plan (operator only; refuses to run in CI)
+	$(NOT_IN_CI)
+	@test -f $(AZURE_DIR)/tfplan || { echo "Run make azure-plan first and review it" >&2; exit 1; }
+	$(TF) -chdir=$(AZURE_DIR) apply -input=false tfplan
+	@rm -f $(AZURE_DIR)/tfplan
+
+oci-init: ## INACTIVE OCI alternative: init envs/oci: R2 state with envs/oci/backend.hcl, or local state with envs/oci/backend_override.tf
 	@if [ -f $(OCI_DIR)/backend_override.tf ]; then \
 		$(TF) -chdir=$(OCI_DIR) init -input=false; \
 	else \
@@ -114,10 +137,10 @@ oci-init: ## Init envs/oci: R2 state with envs/oci/backend.hcl, or local state w
 		$(TF) -chdir=$(OCI_DIR) init -input=false -backend-config=backend.hcl; \
 	fi
 
-oci-plan: ## Plan envs/oci (real OCI tenancy; review before oci-apply, see docs/terraform.md)
+oci-plan: ## INACTIVE OCI alternative: plan envs/oci (real OCI tenancy; review before oci-apply, see docs/terraform.md)
 	$(TF) -chdir=$(OCI_DIR) plan -input=false -out=tfplan
 
-oci-apply: ## Apply the reviewed envs/oci plan (operator only; refuses to run in CI)
+oci-apply: ## INACTIVE OCI alternative: apply the reviewed envs/oci plan (operator only; refuses to run in CI)
 	$(NOT_IN_CI)
 	@test -f $(OCI_DIR)/tfplan || { echo "Run make oci-plan first and review it" >&2; exit 1; }
 	$(TF) -chdir=$(OCI_DIR) apply -input=false tfplan

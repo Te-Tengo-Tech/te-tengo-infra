@@ -2,8 +2,8 @@
 # Smoke test of the deployed test host, from the Mac, through Caddy over HTTPS (make test-smoke).
 # Checks: health, HSTS, hidden endpoints, sign-up and sign-in, an agent's pre-signed clip URL on
 # Floci standing in for Cloudflare R2 (and the upload itself), HLS 401 without a token, RTSPS with
-# Caddy's certificate, the production-shaped settings (R2-style keys, no AWS credentials, OCI image
-# firewall), and a backup to the bucket restored back. Prints a PASS/FAIL summary; exit code 1 on any failure.
+# Caddy's certificate, the production-shaped settings (R2-style keys, no AWS credentials; the OCI image
+# firewall opened on OCI and left alone on Azure), and a backup to the bucket restored back. Prints a PASS/FAIL summary; exit code 1 on any failure.
 set -uo pipefail
 cd "$(dirname "$0")"
 
@@ -16,6 +16,8 @@ APP_DIR=/opt/te-tengo
 WORK=.work
 CA="$WORK/caddy-root.crt"
 RUN_BACKUP="${TT_TEST_BACKUP:-1}"
+# cloud_provider the host was deployed with (make test-deploy TEST_CLOUD=...): azure or oci.
+CLOUD="${TT_TEST_CLOUD:-azure}"
 
 for tool in curl jq openssl docker; do
   command -v "$tool" >/dev/null || { echo "Missing tool: $tool" >&2; exit 2; }
@@ -109,7 +111,8 @@ rtsps_subject=$(openssl s_client -connect "$RTSPS" -servername localhost -CAfile
 check "RTSPS on 8322 presents Caddy's certificate for the host name" grep -q 'DNS:localhost' <<<"$rtsps_subject"
 
 # 6. Production-shaped configuration: R2-style object storage with static keys, no AWS credentials,
-#    and the OCI image firewall opened by the base role.
+#    and the OCI image firewall: opened by the base role on OCI, untouched on Azure (the NSG is the
+#    firewall there and Canonical's Azure image has no such policy).
 # The bash -c bodies below are single-quoted on purpose: the file contents arrive as $1.
 api_env=$(docker exec "$HOST" cat "$APP_DIR/api.env")
 # shellcheck disable=SC2016
@@ -118,13 +121,19 @@ check "api.env signs clips with static keys on an S3-compatible endpoint (R2 sty
 # shellcheck disable=SC2016
 check "api.env holds no AWS credentials" bash -c '! grep -q "^AWS_" <<<"$1"' _ "$api_env"
 rules=$(docker exec "$HOST" cat /etc/iptables/rules.v4)
-# shellcheck disable=SC2016
-check "rules.v4 accepts 80, 443/tcp, 443/udp and 8322 before its INPUT REJECT" bash -c '
-  reject=$(grep -n "^-A INPUT -j REJECT" <<<"$1" | cut -d: -f1)
-  for p in "tcp.*--dport 80 " "tcp.*--dport 443 " "udp.*--dport 443 " "tcp.*--dport 8322 "; do
-    line=$(grep -n -- "-A INPUT -p ${p}" <<<"$1" | head -n1 | cut -d: -f1)
-    [ -n "$line" ] && [ "$line" -lt "$reject" ] || exit 1
-  done' _ "$rules"
+if [ "$CLOUD" != oci ]; then
+  # shellcheck disable=SC2016
+  check "cloud_provider $CLOUD: the OCI firewall tasks are skipped (rules.v4 untouched)" \
+    bash -c '! grep -Eq -- "--dport (80|443|8322) " <<<"$1"' _ "$rules"
+else
+  # shellcheck disable=SC2016
+  check "rules.v4 accepts 80, 443/tcp, 443/udp and 8322 before its INPUT REJECT" bash -c '
+    reject=$(grep -n "^-A INPUT -j REJECT" <<<"$1" | cut -d: -f1)
+    for p in "tcp.*--dport 80 " "tcp.*--dport 443 " "udp.*--dport 443 " "tcp.*--dport 8322 "; do
+      line=$(grep -n -- "-A INPUT -p ${p}" <<<"$1" | head -n1 | cut -d: -f1)
+      [ -n "$line" ] && [ "$line" -lt "$reject" ] || exit 1
+    done' _ "$rules"
+fi
 
 # 7. Backup to the bucket (Floci as R2) and restore.
 if [ "$RUN_BACKUP" = 1 ]; then

@@ -1,6 +1,8 @@
 # Local stand-in for the production host, without any cloud account (make test-host-up / test-down).
-# - host:  Ubuntu 24.04 + systemd + OpenSSH, privileged (Docker-in-Docker), playing the OCI VM. Its
-#          ports 22/443/80/8322 are published on the Mac as 18022/18443/18081/18322.
+# - host:  Ubuntu 24.04 + systemd + OpenSSH, privileged (Docker-in-Docker), playing the production VM
+#          (Azure Standard_B2ats_v2 by default). Its ports 22/443/80/8322 are published on the Mac as
+#          18022/18443/18081/18322. Its memory is capped like the VM's (TT_TEST_HOST_MEM, 1g by default,
+#          plus swap up to TT_TEST_HOST_MEMSWAP from Docker's own VM): every nested container counts.
 # - floci: local AWS emulator. Its S3 API stands in for Cloudflare R2 (clips and backups, static keys,
 #          path style; region us-east-1, since Floci rejects R2's "auto"), reachable from the host and from the containers inside it as
 #          http://floci.test:4566, and from the Mac on 34566.
@@ -14,6 +16,8 @@ services:
     hostname: te-tengo-test
     privileged: true
     cgroup: private
+    mem_limit: ${TT_TEST_HOST_MEM:-1g}
+    memswap_limit: ${TT_TEST_HOST_MEMSWAP:-3g}
     tmpfs:
       - /run
       - /run/lock
