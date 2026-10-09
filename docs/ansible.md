@@ -74,14 +74,14 @@ Container figures are `docker stats` (RAM without swap). The JVM's own native me
 ### API image sources (`te_tengo_api_source`)
 | Value | Use | Variables |
 |---|---|---|
-| `registry` (default) | Production: pulls `te_tengo_api_repository:te_tengo_api_tag` (`pull: always`) | `te_tengo_api_tag` (pin a release or `sha-…` tag); for a private package `te_tengo_registry_auth: login`, `te_tengo_registry_username`, `vault_registry_password` (token with `read:packages`) |
+| `registry` (default) | Production: pulls `te_tengo_api_repository:te_tengo_api_tag` (`pull: always`) | `te_tengo_api_tag` (pin a release or `sha-…` tag, or `current`: the tag of the GHCR image the host already runs, read from `API_IMAGE` in its `.env`; the run fails if the host runs no GHCR image); for a private package `te_tengo_registry_auth: login`, `te_tengo_registry_username`, `vault_registry_password` (token with `read:packages`) |
 | `archive` | No registry: `docker load` of a `docker save` file copied from the controller | `te_tengo_api_archive` (controller path); the image must be tagged `te-tengo-general-api:local` |
 | `build` | Builds on the host from a local checkout (`git archive` of `te_tengo_api_build_ref`, default `HEAD`) | `te_tengo_api_build_src`; `te_tengo_api_build_dockerfile` if the checkout has no Dockerfile |
 
 `compose/compose.build.yaml` does the same without Ansible: `API_BUILD_CONTEXT=../te-tengo-general-api docker compose -f compose.yaml -f compose.build.yaml up -d --build`.
 
 ### Variables
-Terraform's inventory sets `app_hostname`, `cloud_provider`, `memory_profile`, `object_storage_*`, `clips_s3_bucket`, `backup_s3_bucket`, `ses_sender`, `push_provider`, `sns_platform_application_arn` and `live_view_publish_port` (and `aws_region` on AWS); `group_vars/te_tengo/vars.yml` maps them to `te_tengo_*` names that the roles read (a hand-written inventory can set the `te_tengo_*` names directly). Other settings in the same file: `te_tengo_acme_email` (**required**), image names, `te_tengo_api_settings` (extra API variables, merged last), backup schedule, and the SMTP relay.
+Terraform's inventory sets `app_hostname`, `cloud_provider`, `memory_profile`, `object_storage_*`, `clips_s3_bucket`, `backup_s3_bucket`, `ses_sender`, `push_provider`, `sns_platform_application_arn` and `live_view_publish_port` (and `aws_region` on AWS); `group_vars/te_tengo/vars.yml` maps them to `te_tengo_*` names that the roles read (a hand-written inventory can set the `te_tengo_*` names directly). Production's non-secret settings (ACME e-mail, push provider, the PWA's origins and API settings, the deploy key, `te_tengo_api_tag: current`) are in the committed `ansible/prod.yml`, passed as extra vars by `make deploy`/`make redeploy` (`DEPLOY_VARS`) and by the Deploy workflow ([deploy.md](deploy.md#2-inventory-and-vault)). Other settings in `vars.yml`: `te_tengo_acme_email` (**required**), image names, `te_tengo_api_settings` (extra API variables, merged last), backup schedule, and the SMTP relay.
 
 **Clips (Cloudflare R2):** with `object_storage_auth: static` the API gets `TT_CLIPS_BUCKET`, `TT_CLIPS_REGION=auto`, `TT_CLIPS_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com`, `TT_CLIPS_PATH_STYLE=true`, `TT_CLIPS_ACCESS_KEY` / `TT_CLIPS_SECRET_KEY` (vault `vault_clips_s3_*`) and **no AWS credentials**.
 
@@ -102,8 +102,9 @@ Secrets live in `group_vars/te_tengo/vault.yml` (git-ignored, encrypted with `an
 ```bash
 make galaxy                 # collections from ansible/requirements.yml
 make ansible-check          # yamllint + ansible-lint (production profile) + docker compose config
-make deploy                 # full site.yml against ansible/inventory/hosts.yml (asks the vault password)
-make redeploy ANSIBLE_ARGS="-e te_tengo_api_tag=sha-0123abc"   # app role only
+make deploy                 # full site.yml + prod.yml against ansible/inventory/hosts.yml (asks the vault password)
+make redeploy ANSIBLE_ARGS="-e @prod.local.yml -e te_tengo_api_tag=sha-0123abc"   # app role only, new image
+make redeploy ANSIBLE_ARGS="-e @prod.local.yml"   # app role only, configuration (tag: current)
 make backup-now
 ```
 

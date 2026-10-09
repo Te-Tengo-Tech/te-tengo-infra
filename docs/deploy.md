@@ -1,6 +1,6 @@
 # Deploy runbook (Terraform → Ansible → Compose)
 
-End-to-end procedure to put the Te Tengo backend in production: one **Azure VM** (`Standard_B2ats_v2`, 2 vCPU AMD, 1 GiB, Ubuntu 24.04 x64, Azure for Students subscription, region `chilecentral`) running Caddy, the API, PostgreSQL 18 and MediaMTX with Docker Compose under the `tiny` memory profile; clips and dumps in **Cloudflare R2**; DNS at **Namify**; e-mail through an **SMTP relay**; push through Firebase. **First run on 2026-10-08** (API image loaded from an archive, `te_tengo_api_source: archive`; no SMTP relay yet, so e-mails are only logged): the playbook passed its HTTPS checks, Let's Encrypt issued the certificate in seconds and the first backup reached R2. Still pending: the SMTP relay and a published API image for registry deploys. Infrastructure details: [terraform.md](terraform.md); host and stack details: [ansible.md](ansible.md); handoff contract: [interface-terraform-ansible.md](interface-terraform-ansible.md). The inactive alternatives (`envs/oci`, plain SSH like Azure; `envs/mvp`, SSH over SSM) are noted where they differ.
+End-to-end procedure to put the Te Tengo backend in production: one **Azure VM** (`Standard_B2ats_v2`, 2 vCPU AMD, 1 GiB, Ubuntu 24.04 x64, Azure for Students subscription, region `chilecentral`) running Caddy, the API, PostgreSQL 18 and MediaMTX with Docker Compose under the `tiny` memory profile; clips and dumps in **Cloudflare R2**; DNS at **Namify**; e-mail through an **SMTP relay**; push through Firebase. **First run on 2026-10-08** (API image loaded from an archive, `te_tengo_api_source: archive`; no SMTP relay yet, so e-mails are only logged): the playbook passed its HTTPS checks, Let's Encrypt issued the certificate in seconds and the first backup reached R2. Still pending: the SMTP relay, and the first registry deploy (GHCR image) that switches production to the continuous deployment of section 4. Infrastructure details: [terraform.md](terraform.md); host and stack details: [ansible.md](ansible.md); handoff contract: [interface-terraform-ansible.md](interface-terraform-ansible.md). The inactive alternatives (`envs/oci`, plain SSH like Azure; `envs/mvp`, SSH over SSM) are noted where they differ.
 
 ## 0. Prerequisites (operator machine)
 - Terraform ≥ 1.10, the Azure CLI, Ansible core ≥ 2.18 (`make galaxy` for the collections), Docker (for the local test), `jq`, `openssl`, an OpenSSH key pair.
@@ -21,7 +21,7 @@ cp ansible/group_vars/te_tengo/vault.yml.example ansible/group_vars/te_tengo/vau
 $EDITOR ansible/group_vars/te_tengo/vault.yml    # see "Secrets inventory"
 ansible-vault encrypt ansible/group_vars/te_tengo/vault.yml
 ```
-Set in `ansible/group_vars/te_tengo/vars.yml` (or an untracked `ansible/*.local.yml` passed with `-e @`): `te_tengo_acme_email`, `te_tengo_api_tag`, the SMTP relay (`te_tengo_smtp_host`, `te_tengo_smtp_port`, `te_tengo_smtp_security`, `te_tengo_smtp_sender`; only once the API release supports `smtp`, see [ansible.md](ansible.md#variables)), `te_tengo_registry_auth: login` + `te_tengo_registry_username` if the GHCR package is private, and for the PWA its origins in `te_tengo_hls_allow_origins` plus `TT_CORS_ORIGENES`, `TT_PWA_URL` and `TT_ENLACE_BASE` in `te_tengo_api_settings`.
+**Production settings that are not secret live in the committed [`ansible/prod.yml`](../ansible/prod.yml)**: image source (`registry`, public package, `te_tengo_api_tag: current`), `te_tengo_acme_email`, `te_tengo_push_provider`, the PWA's origins (`te_tengo_hls_allow_origins` and `TT_CORS_ORIGENES`, `TT_PWA_URL`, `TT_ENLACE_BASE` in `te_tengo_api_settings`) and the deploy key in `te_tengo_authorized_keys`. `make deploy` and `make redeploy` pass it (`DEPLOY_VARS`), and so does the Deploy workflow, so the operator and CI render the same configuration. It is an extra-vars file rather than `group_vars/te_tengo` because that group also holds the local test host and the inactive OCI and AWS hosts. Only operator-specific values go in an untracked `ansible/prod.local.yml` passed after it (`ANSIBLE_ARGS="-e @prod.local.yml"`): the operator's `ansible_ssh_private_key_file`, or `te_tengo_api_source: archive` with `te_tengo_api_archive`. Remove from an existing `prod.local.yml` the values now in `prod.yml` (ACME e-mail, push provider, origins, `te_tengo_api_settings`): being passed later, they would shadow future changes of `prod.yml`. Other settings, in `prod.yml` or `ansible/group_vars/te_tengo/vars.yml`: the SMTP relay (`te_tengo_smtp_host`, `te_tengo_smtp_port`, `te_tengo_smtp_security`, `te_tengo_smtp_sender`; only once the API release supports `smtp`, see [ansible.md](ansible.md#variables)) and `te_tengo_registry_auth: login` + `te_tengo_registry_username` if the GHCR package were private.
 
 Check access before deploying (the key is the private half of Terraform's `ssh_public_key`; port 22 accepts `admin_cidrs`, anywhere by default):
 ```bash
@@ -30,7 +30,7 @@ cd ansible && ansible te_tengo -m ansible.builtin.ping --ask-vault-pass
 
 ## 3. First deploy (operator, full playbook)
 ```bash
-make deploy ANSIBLE_ARGS="-e te_tengo_api_tag=<tag>"
+make deploy ANSIBLE_ARGS="-e @prod.local.yml -e te_tengo_api_tag=<tag>"   # prod.yml is passed by the Makefile
 ```
 It installs the base packages, the 2 GiB swap file of the `tiny` profile, Docker, the stack and the backup timer (on the inactive OCI alternative it also opens the stack's ports in the OCI image's iptables policy; on Azure the NSG is the only firewall and those tasks are skipped), then verifies over HTTPS from the host: health `UP` with HSTS, HLS 401 without a token, internal and Swagger endpoints 404. From your machine:
 ```bash
@@ -45,32 +45,61 @@ On the 1 GiB host the first start is slow (image pulls, Flyway, the JVM with C1 
 
 Then seed the first household installation (`scripts/create-installation.sh` of the API, run against the host's PostgreSQL: `docker compose exec -T postgres psql -U tetengo -d tetengo` in `/opt/te-tengo`).
 
-## 4. Continuous deploys (GitHub Actions, `deploy.yml`)
-Manual workflow **Deploy** (`workflow_dispatch`; inputs `target` = `azure` (default), `oci` or `aws`, `api_tag`, optional check mode) → `ansible-playbook site.yml --tags app` → public health check. No Terraform runs in it. It is inert (a notice, no job) until the chosen GitHub environment is configured.
+## 4. Continuous deployment (GitHub Actions, `deploy.yml`)
+```
+te-tengo-general-api: merge release/* or hotfix/* into main
+  └─ image.yml: build ─► smoke test ─► push ghcr.io/te-tengo-tech/te-tengo-general-api:sha-<short commit> (+ main, version)
+       └─ repository_dispatch "desplegar-api", client_payload {tag: "sha-<short>", ref: "<commit>"}  (secret DISPATCH_TOKEN there)
+te-tengo-infra: Deploy (deploy.yml, from main)
+  plan (no environment): target azure, tag from the payload, validated
+  └─ deploy-ssh, environment "produccion" ─► WAITS for a required reviewer (jhosepmyr, elmer-riva)
+       ─► SSH with the deploy key, pinned host key ─► ansible-playbook site.yml --tags app -e @prod.yml
+          (te_tengo_api_source=registry, te_tengo_registry_auth=none, te_tengo_api_tag=sha-<short>)
+       ─► the role's own HTTPS checks on the VM ─► GET https://api.tetengo.reqsai.tech/actuator/health = UP
+```
 
-**Target `azure`, GitHub environment `prod`:** plain SSH with a dedicated key; the VM's host key is **pinned** (`StrictHostKeyChecking=yes` with the known-hosts line below), so a replaced or impersonated host stops the deploy. The NSG accepts SSH from anywhere by default, so the GitHub-hosted runner reaches port 22 directly; authentication is key-only.
-
-| Kind | Name | Value |
+| Trigger | Target | Image tag |
 |---|---|---|
-| variable | `APP_URL` | Terraform output `app_url` (`https://api.tetengo.reqsai.tech`) |
-| variable | `ANSIBLE_INVENTORY` | `terraform -chdir=envs/azure output -raw ansible_inventory` (no secrets in it) |
-| variable | `SSH_KNOWN_HOSTS` | `ssh-keyscan -t ed25519 <public_ip>` **after** verifying the fingerprint (terraform.md, step 8), e.g. `192.0.2.10 ssh-ed25519 AAAA...` |
-| variable | `DEPLOY_RUNNER` | optional: label of a self-hosted runner (only needed with a narrowed `admin_cidrs`); default `ubuntu-24.04` |
-| secret | `ANSIBLE_VAULT_B64` | `base64 < ansible/group_vars/te_tengo/vault.yml` (the encrypted file) |
-| secret | `ANSIBLE_VAULT_PASSWORD` | the vault password |
-| secret | `DEPLOY_SSH_PRIVATE_KEY` | private half of a dedicated ed25519 key; its public half goes to `te_tengo_authorized_keys` as `no-agent-forwarding,no-port-forwarding,no-X11-forwarding ssh-ed25519 AAAA... te-tengo-deploy` and one operator run of `make deploy` (`--tags base` is enough) |
+| `repository_dispatch` `desplegar-api` (te-tengo-general-api, after a push to its `main`) | `azure` (`produccion`) | `client_payload.tag`, e.g. `sha-1a2b3c4`; `client_payload.ref` (the API commit) is shown in the run summary |
+| Push to `main` touching `ansible/**` or `compose/**` (a merged infra release) | `azure` (`produccion`) | `current`: configuration only, the image the host already runs |
+| Manual (*Actions → Deploy → Run workflow*, from `main`) | `azure` (default), `oci` or `aws` | the `api_tag` input; empty = `current`. Optional check mode (`--check --diff`) |
+
+- **Approval.** The `deploy-ssh` job runs in the GitHub environment **`produccion`** (required reviewers, branch policy `main`), so every production run pauses until a reviewer approves under *Actions → the run → Review deployments*; nothing touches the VM before that. The small `plan` job before it has no environment and no secrets. A manual run started from a branch other than `main` is refused by the branch policy.
+- **Not configured yet = a notice.** The environment's variables and secrets are checked as the first step after the approval: if any is missing the job ends green with a notice listing them, without touching the VM.
+- **`te_tengo_api_tag: current`.** A configuration deploy keeps the image: the app role reads `API_IMAGE` from the host's `/opt/te-tengo/.env` (written by the previous deploy) and reuses its tag (`ansible/roles/app/tasks/current-tag.yml`). If the host does not run a GHCR image (today it runs `te-tengo-general-api:local`, loaded from an archive) or was never deployed, the run fails before changing anything and asks for a tag. So **the first CI deploy must name a tag** (a dispatch from the API, or a manual run with `api_tag`); from then on `current` works, with no repository variable to keep in sync.
+- **One deploy at a time.** The job's concurrency group `deploy-produccion` never cancels a running deploy. GitHub keeps at most one *pending* run per group: a third run cancels the one still waiting (not the running one), so if an API release and an infra release land at the same moment, check that the API tag was deployed and re-run it by hand otherwise.
+- **Workflow on `main`.** `repository_dispatch` only starts the workflow file of the default branch, on that branch, so the flow is active once this workflow and `ansible/prod.yml` are on `main`.
+- **Public image.** The VM pulls without credentials (`te_tengo_registry_auth: none`): the GHCR package must be made public once (te-tengo-general-api `docs/DEPLOYMENT.md`, *One-time steps*). A linked package inherits the repository's access permissions, not its visibility.
+- **Port 22.** The NSG accepts SSH from anywhere by default, so the GitHub-hosted runner reaches the VM directly; authentication is key-only and the VM's host key is **pinned** (`StrictHostKeyChecking=yes` with `SSH_KNOWN_HOSTS`), so a replaced or impersonated host stops the deploy.
+
+### One-time setup of the `produccion` environment (te-tengo-infra)
+1. **Deploy key.** A dedicated ed25519 pair without passphrase, only for GitHub Actions: `ssh-keygen -t ed25519 -N '' -C te-tengo-deploy -f ~/.ssh/te_tengo_deploy_ed25519` (already generated on the operator's Mac; its public half is in `ansible/prod.yml` as `no-agent-forwarding,no-port-forwarding,no-X11-forwarding ssh-ed25519 AAAA... te-tengo-deploy`: no agent, port or X11 forwarding; no `from=` because GitHub-hosted runners have no fixed address; not `restrict`, which would also forbid a PTY and was not tested with Ansible's SSH options). The key logs in as `ubuntu`, which has sudo: it is as powerful as the operator's key, so keep it only in the GitHub secret and the operator's `~/.ssh`.
+2. **Install its public half on the VM** (operator, with the operator's own key): `make deploy ANSIBLE_ARGS="-e @prod.local.yml --tags authorized_keys"`, then check `ssh -i ~/.ssh/te_tengo_deploy_ed25519 -o IdentitiesOnly=yes ubuntu@57.156.59.215 true`.
+3. **Environment variables and secrets** (*Settings → Environments → produccion*, or `gh` as below, from the te-tengo-infra checkout that holds the vault):
+
+| Kind | Name | Value and how to produce it |
+|---|---|---|
+| secret | `ANSIBLE_VAULT_B64` | the **encrypted** vault, base64: `base64 < ansible/group_vars/te_tengo/vault.yml \| gh secret set ANSIBLE_VAULT_B64 --env produccion -R Te-Tengo-Tech/te-tengo-infra` (check `head -1` of the file is `$ANSIBLE_VAULT;1.1;AES256` first) |
+| secret | `ANSIBLE_VAULT_PASSWORD` | the vault password (password manager): `gh secret set ANSIBLE_VAULT_PASSWORD --env produccion -R Te-Tengo-Tech/te-tengo-infra` (prompts) |
+| secret | `DEPLOY_SSH_PRIVATE_KEY` | private half of the deploy key: `gh secret set DEPLOY_SSH_PRIVATE_KEY --env produccion -R Te-Tengo-Tech/te-tengo-infra < ~/.ssh/te_tengo_deploy_ed25519` |
+| variable | `SSH_KNOWN_HOSTS` | the VM's ed25519 host key line `57.156.59.215 ssh-ed25519 AAAA...`: `ssh-keyscan -t ed25519 57.156.59.215 2>/dev/null`, **after** checking that `ssh-keyscan -t ed25519 57.156.59.215 2>/dev/null \| ssh-keygen -lf -` prints the fingerprint the operator already trusts (`ssh-keygen -l -F 57.156.59.215`, or the boot diagnostics log of [terraform.md](terraform.md#runbook-first-apply-on-azure-operator), step 8); then `gh variable set SSH_KNOWN_HOSTS --env produccion -R Te-Tengo-Tech/te-tengo-infra --body "<that line>"` |
+| variable | `ANSIBLE_INVENTORY` | the Terraform inventory (no secrets in it): `terraform -chdir=envs/azure output -raw ansible_inventory`, the same as the operator's `ansible/inventory/hosts.yml`: `gh variable set ANSIBLE_INVENTORY --env produccion -R Te-Tengo-Tech/te-tengo-infra < ansible/inventory/hosts.yml` |
+| variable | `APP_URL` | `https://api.tetengo.reqsai.tech` (Terraform output `app_url`); the health check calls `$APP_URL/actuator/health` |
+| variable | `DEPLOY_RUNNER` | optional: label of a self-hosted runner (only with a narrowed `admin_cidrs`); default `ubuntu-24.04` |
+
+   Rotate `ANSIBLE_VAULT_B64` every time the vault changes. The old `prod` environment is no longer used by the workflow and can be deleted.
+4. **te-tengo-general-api:** the `DISPATCH_TOKEN` secret and the public GHCR package (its `docs/DEPLOYMENT.md`).
+5. **First registry deploy:** after the first push of the API to `main` (or a manual image run with *push*), approve the dispatched run, or run **Deploy** by hand with `api_tag = sha-<short commit>`. Until then `current` has no registry image to keep.
 
 **If `admin_cidrs` is narrowed** (and always on the OCI alternative, whose `admin_cidrs` has no default), GitHub-hosted runners, which have no fixed address, can no longer reach port 22. Options, cheapest first:
 1. Run the workflow on a **self-hosted runner** whose public IP is in `admin_cidrs` (the operator's machine or another always-on box): register it, set `DEPLOY_RUNNER` to its label. It needs `pipx`, `curl` and `jq`.
-2. Deploy from the operator's machine with `make redeploy ANSIBLE_ARGS="-e te_tengo_api_tag=<tag>"` (same playbook, same result).
+2. Deploy from the operator's machine with `make redeploy ANSIBLE_ARGS="-e @prod.local.yml -e te_tengo_api_tag=<tag>"` (same playbook, same result).
 3. Add the runner's address to `admin_cidrs` for the deploy and remove it afterwards (`terraform apply` from the operator's machine).
 A temporary NSG rule managed from the workflow (Azure credentials through GitHub OIDC) or Azure Bastion would also work; neither is implemented (Bastion is a paid resource).
 
-**Target `oci`, GitHub environment `oci` (inactive):** the same SSH job with the variables and secrets above in the `oci` environment, `ANSIBLE_INVENTORY` from `envs/oci`.
+**Target `oci`, GitHub environment `oci` (inactive):** manual runs only; the same SSH job with the variables and secrets above in the `oci` environment, `ANSIBLE_INVENTORY` from `envs/oci`, and **without** `prod.yml` (production settings of the Azure host). Protect it with required reviewers if it is ever used.
 
-Protect the environment with required reviewers.
-
-**Target `aws`, GitHub environment `mvp` (inactive):** OIDC → the Terraform deploy role → SSH over SSM. Variables `AWS_DEPLOY_ROLE_ARN` (output `github_deploy_role_arn`), `AWS_REGION`, `EC2_INSTANCE_ID` (output `instance_id`), `APP_URL`, `ANSIBLE_INVENTORY` (from `envs/mvp`); the same three secrets, with the deploy key restricted to the SSM tunnel (`from="127.0.0.1,::1",...`). The session name `te-tengo-mvp-deploy-<run id>` is required by the role's policy.
+**Target `aws`, GitHub environment `mvp` (inactive):** manual runs only; OIDC → the Terraform deploy role → SSH over SSM. Variables `AWS_DEPLOY_ROLE_ARN` (output `github_deploy_role_arn`), `AWS_REGION`, `EC2_INSTANCE_ID` (output `instance_id`), `APP_URL`, `ANSIBLE_INVENTORY` (from `envs/mvp`); the same three secrets, with the deploy key restricted to the SSM tunnel (`from="127.0.0.1,::1",...`). The session name `te-tengo-mvp-deploy-<run id>` is required by the role's policy.
 
 ## 5. Operations
 - Shell and logs: `ssh ubuntu@<public_ip>`, then `cd /opt/te-tengo && sudo docker compose logs -f api`.
@@ -83,7 +112,7 @@ Protect the environment with required reviewers.
 ## 6. Rollback
 | What broke | Rollback |
 |---|---|
-| A new API image | Re-run **Deploy** (or `make redeploy ANSIBLE_ARGS="-e te_tengo_api_tag=<previous tag>"`) with the previous tag. Flyway migrations are forward-only: if the bad release migrated the schema, restore the dump taken before it (the deploy does not take one: run `make backup-now` before any release with a migration). |
+| A new API image | Run **Deploy** by hand with the previous `sha-<short commit>` tag (each run's summary names its tag; or `make redeploy ANSIBLE_ARGS="-e @prod.local.yml -e te_tengo_api_tag=<previous tag>"`). A later configuration deploy keeps that tag (`current`) until the next API release. Flyway migrations are forward-only: if the bad release migrated the schema, restore the dump taken before it (the deploy does not take one: run `make backup-now` before any release with a migration). |
 | Configuration (Caddyfile, mediamtx.yml, env) | Revert the commit in this repository and redeploy the app role; handlers reload Caddy and restart MediaMTX/API. |
 | Data | `te-tengo-restore` with the latest good dump (see above). |
 | The host | Terraform recreates the VM (`terraform -chdir=envs/azure apply -replace=module.te_tengo.azurerm_linux_virtual_machine.app`; the static IP stays, so the A record at Namify stays valid), refresh `SSH_KNOWN_HOSTS` (new host key), `make inventory && make deploy` and restore the last dump from R2 (`te-tengo-restore latest`). Caddy gets a new certificate (Let's Encrypt rate limits: 5 duplicate certificates per week). |
@@ -101,8 +130,8 @@ Protect the environment with required reviewers.
 | R2 state token | Operator's `~/.aws/credentials` (`[r2-tfstate]`) | — | New token (tfstate bucket), update the profile, revoke the old one |
 | SMTP credentials (`vault_smtp_username`, `vault_smtp_password`) | Ansible Vault | `api.env` | New password or API key at the relay, update the vault, `make redeploy` |
 | GHCR token (`vault_registry_password`) | Ansible Vault | Docker credential store of root | Only if the package is private |
-| Vault password | Password manager; GitHub secret `ANSIBLE_VAULT_PASSWORD` | — | `ansible-vault rekey`, update the secret |
-| Deploy SSH key | GitHub secret `DEPLOY_SSH_PRIVATE_KEY`; public half in `te_tengo_authorized_keys` | `~ubuntu/.ssh/authorized_keys` | New pair, run the base role, update the secret, remove the old key |
+| Vault password | Password manager; GitHub secret `ANSIBLE_VAULT_PASSWORD` (environment `produccion`) | — | `ansible-vault rekey`, update the secret and `ANSIBLE_VAULT_B64` |
+| Deploy SSH key | GitHub secret `DEPLOY_SSH_PRIVATE_KEY` (environment `produccion`) and the operator's `~/.ssh/te_tengo_deploy_ed25519`; public half in `te_tengo_authorized_keys` of `ansible/prod.yml` | `~ubuntu/.ssh/authorized_keys` | New pair, replace the public half in `prod.yml`, `make deploy ANSIBLE_ARGS="-e @prod.local.yml --tags authorized_keys"`, update the secret, remove the old line from `authorized_keys` by hand (the role only adds keys) |
 | Operator SSH key | Operator's machine; public half in Terraform's `ssh_public_key` (VM `admin_ssh_key`) | `~ubuntu/.ssh/authorized_keys` | Add the new key with `te_tengo_authorized_keys`, then remove the old line by hand |
 | Azure CLI login | Operator's `~/.azure` (token cache of `az login`) | — | `az logout` / `az login`; nothing Azure-related is stored in GitHub |
 | OCI API signing key (inactive alternative) | Operator's `~/.oci/config` | — | Add a new key in the console, update the config, delete the old key |
