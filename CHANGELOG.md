@@ -4,6 +4,12 @@ Format based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/); 
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-09
+
+### Fixed
+
+- `produccion.yml` and `rollback.yml` call `deploy.yml` with `secrets: inherit`; without it the called job in `produccion` did not receive the environment secrets (`ANSIBLE_VAULT_B64`, `ANSIBLE_VAULT_PASSWORD`, `DEPLOY_SSH_PRIVATE_KEY`) and the production redeploy of 0.1.0 failed before touching the host.
+
 ## [0.1.0] - 2026-10-09
 
 ### Added
