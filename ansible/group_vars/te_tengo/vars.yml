@@ -34,8 +34,9 @@ te_tengo_dir: /opt/te-tengo
 # Let's Encrypt account e-mail (expiry notices). Required.
 te_tengo_acme_email: ""
 
-# API image: published by te-tengo-general-api's release workflow. Pin a release or commit tag for
-# production deploys (`-e te_tengo_api_tag=...`).
+# API image: published by te-tengo-general-api's image workflow. Pin a release or commit tag for
+# production deploys (`-e te_tengo_api_tag=sha-<short commit>`); `current` keeps the registry tag the host
+# already runs (production default, prod.yml).
 te_tengo_api_repository: ghcr.io/te-tengo-tech/te-tengo-general-api
 te_tengo_api_tag: latest
 # registry (pull te_tengo_api_repository:te_tengo_api_tag), archive (docker load a file from the
@@ -59,6 +60,11 @@ te_tengo_smtp_security: starttls
 # "Name <address>" of a sender the relay accepts (its domain verified at the relay), e.g.
 # "Te Tengo <no-responder@tetengo.reqsai.tech>".
 te_tengo_smtp_sender: ""
+
+# Browser origins (scheme://host[:port]) allowed to read the live view over HLS: the PWA's origins, the
+# same as the API's TT_CORS_ORIGENES (set in te_tengo_api_settings). ["*"] allows any origin; native
+# clients send no Origin and are not affected. Playback still needs a token.
+te_tengo_hls_allow_origins: ["*"]
 
 # Extra API settings merged last into api.env (e.g. TT_RETENCION_CLIPS, TT_AGENTE_VERSION_PUBLICADA).
 te_tengo_api_settings: {}

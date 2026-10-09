@@ -5,8 +5,11 @@
 
 ANSIBLE_DIR     ?= ansible
 VAULT_ARGS      ?= --ask-vault-pass
-# Extra arguments for ansible-playbook, e.g. ANSIBLE_ARGS="-e te_tengo_api_tag=sha-0123abc --diff"
+# Extra arguments for ansible-playbook, e.g. ANSIBLE_ARGS="-e @prod.local.yml -e te_tengo_api_tag=sha-0123abc --diff"
 ANSIBLE_ARGS    ?=
+# Production settings that are not secret (ansible/prod.yml), passed before ANSIBLE_ARGS so an untracked
+# -e @prod.local.yml wins. Empty it for another host: make deploy DEPLOY_VARS=
+DEPLOY_VARS     ?= -e @prod.yml
 # Local te-tengo-general-api checkout the test image is built from.
 TT_API_SRC      ?= $(abspath ../te-tengo-general-api)
 TEST_COMPOSE    := docker compose -f test/compose.yaml
@@ -48,11 +51,11 @@ compose-config: ## Validate compose/compose.yaml with the example env files
 
 ansible-check: yamllint ansible-lint compose-config ## Every static check of the Ansible side
 
-deploy: ## Full playbook against ansible/inventory/hosts.yml (real host; docs/deploy.md)
-	cd $(ANSIBLE_DIR) && ansible-playbook site.yml $(VAULT_ARGS) $(ANSIBLE_ARGS)
+deploy: ## Full playbook against ansible/inventory/hosts.yml with prod.yml (real host; docs/deploy.md)
+	cd $(ANSIBLE_DIR) && ansible-playbook site.yml $(VAULT_ARGS) $(DEPLOY_VARS) $(ANSIBLE_ARGS)
 
-redeploy: ## Only the app role (new image tag or configuration)
-	cd $(ANSIBLE_DIR) && ansible-playbook site.yml --tags app $(VAULT_ARGS) $(ANSIBLE_ARGS)
+redeploy: ## Only the app role (new image tag, or configuration with the deployed tag)
+	cd $(ANSIBLE_DIR) && ansible-playbook site.yml --tags app $(VAULT_ARGS) $(DEPLOY_VARS) $(ANSIBLE_ARGS)
 
 backup-now: ## Run the backup job on the host now
 	cd $(ANSIBLE_DIR) && ansible te_tengo --become -m ansible.builtin.systemd_service \

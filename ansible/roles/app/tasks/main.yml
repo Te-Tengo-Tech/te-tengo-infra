@@ -1,4 +1,8 @@
 ---
+- name: Resolve the deployed API tag (te_tengo_api_tag current)
+  ansible.builtin.include_tasks: current-tag.yml
+  when: app_api_source == 'registry' and app_api_tag == 'current'
+
 - name: Validate required settings
   ansible.builtin.assert:
     that:
@@ -9,6 +13,7 @@
       - app_memory_profile in app_memory_profiles
       - app_api_source in ['registry', 'archive', 'build']
       - app_registry_auth in ['none', 'login']
+      - app_api_source != 'registry' or app_api_tag is match('^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$')
       - app_clips_bucket | length > 0
       - app_object_storage_region | length > 0
       - app_object_storage_auth in ['static', 'instance_role']
@@ -21,6 +26,8 @@
       - app_push_provider in ['fcm', 'sns', 'registro']
       - app_push_provider != 'sns' or app_sns_platform_application_arn | length > 0
       - app_rtsps_port | int > 0
+      - app_hls_allow_origins | length > 0
+      - app_hls_allow_origins | select('search', '[,\\s]') | list | length == 0
     fail_msg: >-
       Missing or invalid settings. From the Terraform inventory: app_hostname, clips_s3_bucket,
       object_storage_region (or aws_region), object_storage_auth (static or instance_role),
@@ -28,7 +35,7 @@
       {{ app_memory_profiles.keys() | join(', ') }}), push_provider (fcm, sns or registro; sns needs
       sns_platform_application_arn and aws_region) and live_view_publish_port. From
       group_vars/te_tengo/vars.yml: te_tengo_acme_email, te_tengo_api_source (registry, archive or build),
-      te_tengo_registry_auth (none or login), the mail provider (smtp needs te_tengo_smtp_sender and
+      te_tengo_registry_auth (none or login), te_tengo_api_tag (an image tag, or current), the mail provider (smtp needs te_tengo_smtp_sender and
       te_tengo_smtp_port, te_tengo_smtp_security starttls/ssl/none; ses needs ses_sender and aws_region).
     quiet: true
 

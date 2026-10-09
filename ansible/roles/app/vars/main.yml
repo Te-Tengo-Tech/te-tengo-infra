@@ -37,6 +37,7 @@ app_compose_env:
   CADDY_MEM_LIMIT: "{{ app_profile.caddy_mem_limit }}"
   API_JAVA_OPTS: "{{ app_profile.api_java_opts }}"
   MEDIAMTX_AUTH_SECRET: "{{ vault_mediamtx_auth_secret | default('') }}"
+  HLS_ALLOW_ORIGINS: "{{ app_hls_allow_origins | join(',') }}"
 
 app_api_env_core:
   SERVER_FORWARD_HEADERS_STRATEGY: native

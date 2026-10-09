@@ -1,0 +1,34 @@
+---
+# te_tengo_api_tag: current -> keep the tag of the registry image the host already runs, so a
+# configuration-only deploy (deploy.yml on a push to main, or `make redeploy` with prod.yml) never changes
+# the image. The deployed image is API_IMAGE in the Compose environment file this role wrote last time.
+- name: Read the deployed Compose environment file
+  ansible.builtin.slurp:
+    src: "{{ app_dir }}/.env"
+  register: app_current_env
+  failed_when: false
+  no_log: true  # the file also holds the PostgreSQL password and the MediaMTX secret
+
+- name: Find the deployed API image
+  ansible.builtin.set_fact:
+    app_current_api_image: >-
+      {{ (app_current_env.content | default('') | b64decode
+          | regex_search("^API_IMAGE='([^']*)'$", '\1', multiline=True)) | default([''], true) | first }}
+
+- name: Require a registry image on the host
+  ansible.builtin.assert:
+    that:
+      - app_current_api_image is match('^' ~ (app_api_repository | regex_escape) ~ ':[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$')
+    fail_msg: >-
+      te_tengo_api_tag is 'current' but the host does not run an image of {{ app_api_repository }}
+      (found: '{{ app_current_api_image | default('', true) or 'no deployment' }}'), e.g. it was loaded from an
+      archive. Deploy a tag once: -e te_tengo_api_tag=sha-<short commit> (or the Deploy workflow with that tag).
+    quiet: true
+
+- name: Keep the deployed API tag
+  ansible.builtin.set_fact:
+    app_api_tag: "{{ app_current_api_image[(app_api_repository ~ ':') | length:] }}"
+
+- name: Show the API image kept
+  ansible.builtin.debug:
+    msg: "Keeping the deployed API image {{ app_api_repository }}:{{ app_api_tag }}"

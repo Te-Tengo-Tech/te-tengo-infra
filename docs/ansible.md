@@ -23,6 +23,7 @@ Every setting in `compose.yaml` uses `${VAR:?…}`: a missing value stops `docke
 ### Live view (MediaMTX)
 - The auth hook URL carries the shared secret (`MTX_AUTHHTTPADDRESS` = `http://api:8080/api/interno/mediamtx/autorizar?secreto=<vault_mediamtx_auth_secret>`); the API receives the same value as `TT_VIVO_SECRETO_AUTORIZACION`. Caddy never routes `/api/interno/*`.
 - The API gets `TT_VIVO_URL_PUBLICACION=rtsps://<host>:8322/camaras/{camaraId}`, `TT_VIVO_URL_HLS=https://<host>/vivo`, `TT_VIVO_MEDIAMTX_API=http://mediamtx:9997`.
+- Browser clients (the PWA) read HLS from another origin: `te_tengo_hls_allow_origins` (default `["*"]`) becomes `MTX_HLSALLOWORIGINS`; in production set it to the PWA's origins, the same list as the API's `TT_CORS_ORIGENES` (`te_tengo_api_settings`). Native clients send no `Origin` and are not affected.
 - The control API is excluded from the hook (`authHTTPExclude: [api]`) because the API itself calls it to kick publishers and readers; it is not published on the host.
 - MediaMTX answers the first playlist request with a 302 to `?cookieCheck=1` (its HLS session check). Caddy rewrites that `Location` back under `/vivo/`. `hlsTrustedProxies` lets MediaMTX bind HLS sessions to the phone's IP from `X-Forwarded-For`.
 
@@ -56,6 +57,8 @@ MediaMTX mounts Caddy's data volume **read-only** (`caddy-data:/caddy-data:ro`) 
 
 Container figures are `docker stats` (RAM without swap). The JVM's own native memory tracking committed about 450 MiB (heap 256, metaspace about 100, symbols 25, code cache 21, CDS 13). In short: **it fits, but only with swap**: the host runs at its RAM cap and keeps 120 to 280 MiB in swap, mostly idle API pages. Swap on a Standard SSD is slow, so after the first deploy watch `free -m`, `swapon --show` and response times; if the API is often slow or restarts with `OutOfMemoryError`, resize to `Standard_B2als_v2` (`medium`). A first attempt with an API cap of 480 MiB pushed 224 MiB of the API into swap, hence 560 MiB.
 
+**Measured on the real Azure VM** (2026-10-08, `Standard_B2ats_v2`, 842 MiB usable, 2 GiB swap file), idle, a few minutes after the first deploy: host `used` 510 MiB, page cache 410 MiB, **swap 512 MiB**; per container (cgroup RAM / swap): api 122 / 351 MiB, postgres 54 / 20, caddy 47 / 9, mediamtx 24 / 10; no restart, no OOM kill. The API started in **66 s** (Spring's log line; 5 to 7 s on the Mac), health answers in 0.3 to 0.5 s. Most of the idle API lives in swap; first requests after a quiet period page it back in.
+
 **6 GB host (OCI default, half of the tenancy's A1 allowance):** the `large` caps add up to about 3.8 GB, leaving about 2 GB for Ubuntu, Docker, `pg_dump` and the page cache that `effective_cache_size` assumes; the 1 GiB swap file absorbs peaks. One OCPU is a single Ampere core, so the JVM uses the serial collector (no parallel GC threads competing for it) and Hikari keeps 12 connections out of PostgreSQL's 40. Not measured on a real A1 yet: check `docker stats` and `free -m` after the first week.
 
 ## Roles (`ansible/roles/`)
@@ -71,14 +74,14 @@ Container figures are `docker stats` (RAM without swap). The JVM's own native me
 ### API image sources (`te_tengo_api_source`)
 | Value | Use | Variables |
 |---|---|---|
-| `registry` (default) | Production: pulls `te_tengo_api_repository:te_tengo_api_tag` (`pull: always`) | `te_tengo_api_tag` (pin a release or `sha-…` tag); for a private package `te_tengo_registry_auth: login`, `te_tengo_registry_username`, `vault_registry_password` (token with `read:packages`) |
+| `registry` (default) | Production: pulls `te_tengo_api_repository:te_tengo_api_tag` (`pull: always`) | `te_tengo_api_tag` (pin a release or `sha-…` tag, or `current`: the tag of the GHCR image the host already runs, read from `API_IMAGE` in its `.env`; the run fails if the host runs no GHCR image); for a private package `te_tengo_registry_auth: login`, `te_tengo_registry_username`, `vault_registry_password` (token with `read:packages`) |
 | `archive` | No registry: `docker load` of a `docker save` file copied from the controller | `te_tengo_api_archive` (controller path); the image must be tagged `te-tengo-general-api:local` |
 | `build` | Builds on the host from a local checkout (`git archive` of `te_tengo_api_build_ref`, default `HEAD`) | `te_tengo_api_build_src`; `te_tengo_api_build_dockerfile` if the checkout has no Dockerfile |
 
 `compose/compose.build.yaml` does the same without Ansible: `API_BUILD_CONTEXT=../te-tengo-general-api docker compose -f compose.yaml -f compose.build.yaml up -d --build`.
 
 ### Variables
-Terraform's inventory sets `app_hostname`, `cloud_provider`, `memory_profile`, `object_storage_*`, `clips_s3_bucket`, `backup_s3_bucket`, `ses_sender`, `push_provider`, `sns_platform_application_arn` and `live_view_publish_port` (and `aws_region` on AWS); `group_vars/te_tengo/vars.yml` maps them to `te_tengo_*` names that the roles read (a hand-written inventory can set the `te_tengo_*` names directly). Other settings in the same file: `te_tengo_acme_email` (**required**), image names, `te_tengo_api_settings` (extra API variables, merged last), backup schedule, and the SMTP relay.
+Terraform's inventory sets `app_hostname`, `cloud_provider`, `memory_profile`, `object_storage_*`, `clips_s3_bucket`, `backup_s3_bucket`, `ses_sender`, `push_provider`, `sns_platform_application_arn` and `live_view_publish_port` (and `aws_region` on AWS); `group_vars/te_tengo/vars.yml` maps them to `te_tengo_*` names that the roles read (a hand-written inventory can set the `te_tengo_*` names directly). Production's non-secret settings (ACME e-mail, push provider, the PWA's origins and API settings, the deploy key, `te_tengo_api_tag: current`) are in the committed `ansible/prod.yml`, passed as extra vars by `make deploy`/`make redeploy` (`DEPLOY_VARS`) and by the Deploy workflow ([deploy.md](deploy.md#2-inventory-and-vault)). Other settings in `vars.yml`: `te_tengo_acme_email` (**required**), image names, `te_tengo_api_settings` (extra API variables, merged last), backup schedule, and the SMTP relay.
 
 **Clips (Cloudflare R2):** with `object_storage_auth: static` the API gets `TT_CLIPS_BUCKET`, `TT_CLIPS_REGION=auto`, `TT_CLIPS_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com`, `TT_CLIPS_PATH_STYLE=true`, `TT_CLIPS_ACCESS_KEY` / `TT_CLIPS_SECRET_KEY` (vault `vault_clips_s3_*`) and **no AWS credentials**.
 
@@ -99,8 +102,9 @@ Secrets live in `group_vars/te_tengo/vault.yml` (git-ignored, encrypted with `an
 ```bash
 make galaxy                 # collections from ansible/requirements.yml
 make ansible-check          # yamllint + ansible-lint (production profile) + docker compose config
-make deploy                 # full site.yml against ansible/inventory/hosts.yml (asks the vault password)
-make redeploy ANSIBLE_ARGS="-e te_tengo_api_tag=sha-0123abc"   # app role only
+make deploy                 # full site.yml + prod.yml against ansible/inventory/hosts.yml (asks the vault password)
+make redeploy ANSIBLE_ARGS="-e @prod.local.yml -e te_tengo_api_tag=sha-0123abc"   # app role only, new image
+make redeploy ANSIBLE_ARGS="-e @prod.local.yml"   # app role only, configuration (tag: current)
 make backup-now
 ```
 

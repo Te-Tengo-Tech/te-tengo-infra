@@ -86,7 +86,7 @@ Only relevant with `enable_s3_buckets`, `enable_ses` or `enable_sns` (all off by
 | `AmazonSSMManagedInstanceCore` | — | Session Manager (Ansible transport, shell) |
 
 ## GitHub Actions deploy
-**Azure (environment `prod`) and OCI (environment `oci`):** plain SSH with a dedicated deploy key and a pinned host key; see [deploy.md](deploy.md#4-continuous-deploys-github-actions-deployyml).
+**Azure (environment `produccion`, with required reviewers) and OCI (environment `oci`):** plain SSH with a dedicated deploy key and a pinned host key; see [deploy.md](deploy.md#4-continuous-deployment-github-actions-deployyml).
 
 **AWS (environment `mvp`):**
 Terraform output `github_deploy_role_arn` → GitHub environment variable `AWS_DEPLOY_ROLE_ARN`. The role trusts only `repo:Te-Tengo-Tech/te-tengo-infra:environment:mvp`, may only `ssm:StartSession` on the instance with `AWS-StartSSHSession`, and may terminate/resume only sessions whose id starts with `te-tengo-mvp-deploy-`, so the workflow must set `role-session-name: te-tengo-mvp-deploy-${{ github.run_id }}`. Other variables the workflow needs: `EC2_INSTANCE_ID` (output `instance_id`), `AWS_REGION`, `APP_URL` (output `app_url`).
