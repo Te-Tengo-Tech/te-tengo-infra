@@ -9,9 +9,12 @@ on:
       - ansible.mk
       - Makefile
       - .yamllint
-      - .github/workflows/ansible.yml
+      # make yamllint also lints every workflow file.
+      - .github/workflows/**
   push:
-    branches: [develop, main]
+    # release/* and hotfix/* too: the release pull request to main is opened by release.yml with GITHUB_TOKEN,
+    # which starts no pull_request run, so its checks come from these pushes (same commit).
+    branches: [develop, main, "release/**", "hotfix/**"]
     paths:
       - ansible/**
       - compose/**
@@ -19,7 +22,8 @@ on:
       - ansible.mk
       - Makefile
       - .yamllint
-      - .github/workflows/ansible.yml
+      # make yamllint also lints every workflow file.
+      - .github/workflows/**
   workflow_dispatch:
     inputs:
       api_ref:

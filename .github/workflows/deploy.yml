@@ -1,17 +1,19 @@
 name: Deploy
 run-name: >-
-  ${{ github.event_name == 'repository_dispatch' && format('Deploy API {0} to produccion', github.event.client_payload.tag)
-  || (github.event_name == 'push' && 'Redeploy the configuration to produccion'
-  || format('Deploy API {0} to {1}', inputs.api_tag || 'current', inputs.target)) }}
+  ${{ github.event_name == 'repository_dispatch'
+  && format('Deploy API {0} ({1}) to produccion', github.event.client_payload.tag, github.event.client_payload.version || 'no version')
+  || format('Deploy API {0} to {1}', inputs.api_tag || 'current', inputs.target) }}
 
-# Continuous deployment of the app role (Ansible over SSH; no Terraform runs here). Runbook: docs/deploy.md.
+# Production deploy of the app role (Ansible over SSH; no Terraform runs here). Runbook: docs/deploy.md.
 # Every production run waits for a required reviewer on the GitHub environment `produccion` before the
-# job starts, so nothing touches the VM without approval.
-# - repository_dispatch `desplegar-api`: sent by te-tengo-general-api's image workflow after it pushed a
-#   new image from its main branch; client_payload {tag: sha-<short commit>, ref: <commit>}. Deploys that
-#   tag to production (Azure).
-# - push to main touching ansible/** or compose/**: configuration-only redeploy to production with the
-#   image the host already runs (te_tengo_api_tag=current; roles/app/tasks/current-tag.yml).
+# job starts, so nothing touches the VM without approval. There are no deploys on a push to main: releases
+# are promoted from their release branch, and main is merged last.
+# - repository_dispatch `desplegar-api`: sent by the produccion stage of te-tengo-general-api's Release
+#   workflow (release.yml, on its release/* or hotfix/* branch) after the image passed its verification;
+#   client_payload {tag: sha-<short commit>, digest: sha256:..., ref: <commit>, version: x.y.z}. Deploys that
+#   tag to production (Azure) after checking that it still resolves to the digest.
+# - workflow_call: the produccion stage of this repository's Release workflow (release.yml) redeploys the
+#   configuration of an infra release with the image the host already runs (api_tag empty = current).
 # - workflow_dispatch: any tag (empty = current), any target, optional check mode.
 # Targets: azure (production, environment `produccion`: plain SSH with a dedicated deploy key and a pinned
 # host key, the committed ansible/prod.yml); oci (inactive alternative, environment `oci`, same SSH path,
@@ -25,11 +27,24 @@ run-name: >-
 on:
   repository_dispatch:
     types: [desplegar-api]
-  push:
-    branches: [main]
-    paths:
-      - ansible/**
-      - compose/**
+  workflow_call:
+    inputs:
+      target:
+        description: Where to deploy (azure is production)
+        type: string
+        default: azure
+      api_tag:
+        description: Tag of ghcr.io/te-tengo-tech/te-tengo-general-api; empty keeps the deployed one
+        type: string
+        default: ""
+      check_only:
+        description: Run Ansible in check mode (no change on the host)
+        type: boolean
+        default: false
+      reason:
+        description: Why this deploy runs (shown in the summary)
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       target:
@@ -57,6 +72,7 @@ defaults:
 env:
   ANSIBLE_CORE_VERSION: 2.21.5
   ANSIBLE_FORCE_COLOR: "1"
+  API_IMAGE: ghcr.io/te-tengo-tech/te-tengo-general-api
 
 jobs:
   plan:
@@ -67,6 +83,7 @@ jobs:
       target: ${{ steps.resolve.outputs.target }}
       environment: ${{ steps.resolve.outputs.environment }}
       api_tag: ${{ steps.resolve.outputs.api_tag }}
+      api_digest: ${{ steps.resolve.outputs.api_digest }}
       check_only: ${{ steps.resolve.outputs.check_only }}
       reason: ${{ steps.resolve.outputs.reason }}
     steps:
@@ -78,34 +95,53 @@ jobs:
           INPUT_TARGET: ${{ inputs.target }}
           INPUT_TAG: ${{ inputs.api_tag }}
           INPUT_CHECK_ONLY: ${{ inputs.check_only }}
+          INPUT_REASON: ${{ inputs.reason }}
           PAYLOAD_TAG: ${{ github.event.client_payload.tag }}
+          PAYLOAD_DIGEST: ${{ github.event.client_payload.digest }}
           PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          PAYLOAD_VERSION: ${{ github.event.client_payload.version }}
         run: |
-          case "$EVENT" in
-            repository_dispatch)
-              target=azure; tag="$PAYLOAD_TAG"; check_only=false
-              if [[ ! "$PAYLOAD_REF" =~ ^[0-9a-f]{7,40}$ ]]; then
-                echo "::error::client_payload.ref must be a commit SHA of te-tengo-general-api"
-                exit 1
-              fi
-              reason="te-tengo-general-api commit $PAYLOAD_REF (https://github.com/Te-Tengo-Tech/te-tengo-general-api/commit/$PAYLOAD_REF)"
-              ;;
-            push)
-              target=azure; tag=current; check_only=false
-              reason="configuration change $GITHUB_SHA in this repository"
-              ;;
-            workflow_dispatch)
-              target="$INPUT_TARGET"; tag="${INPUT_TAG:-current}"; check_only="$INPUT_CHECK_ONLY"
-              reason="manual run by $GITHUB_ACTOR"
-              ;;
-            *)
-              echo "::error::Unexpected event $EVENT"
+          digest=""
+          if [ "$EVENT" = repository_dispatch ]; then
+            target=azure; tag="$PAYLOAD_TAG"; check_only=false; digest="$PAYLOAD_DIGEST"
+            if [[ ! "$PAYLOAD_REF" =~ ^[0-9a-f]{7,40}$ ]]; then
+              echo "::error::client_payload.ref must be a commit SHA of te-tengo-general-api"
               exit 1
-              ;;
-          esac
+            fi
+            if [ -n "$digest" ] && [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::client_payload.digest must be sha256:<64 hex digits>"
+              exit 1
+            fi
+            if [ -n "$PAYLOAD_VERSION" ] && [[ ! "$PAYLOAD_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::client_payload.version must be x.y.z"
+              exit 1
+            fi
+            commit_url="https://github.com/Te-Tengo-Tech/te-tengo-general-api/commit/$PAYLOAD_REF"
+            reason="te-tengo-general-api ${PAYLOAD_VERSION:+release $PAYLOAD_VERSION, }commit $PAYLOAD_REF ($commit_url)"
+          elif [ -n "$INPUT_TARGET" ]; then
+            # workflow_dispatch, or workflow_call from release.yml (whose event is the caller's push).
+            target="$INPUT_TARGET"; tag="${INPUT_TAG:-current}"; check_only="$INPUT_CHECK_ONLY"
+            reason="${INPUT_REASON:-manual run by $GITHUB_ACTOR}"
+          else
+            echo "::error::Unexpected event $EVENT without inputs"
+            exit 1
+          fi
           if [[ ! "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
             echo "::error::Invalid image tag: $tag"
             exit 1
+          fi
+          # The release verified this digest: refuse to deploy if the tag was moved since. The check reads the
+          # registry anonymously, so it needs the public package; otherwise it only warns.
+          if [ -n "$digest" ]; then
+            if resolved=$(docker buildx imagetools inspect "$API_IMAGE:$tag" --format '{{json .Manifest}}' 2>/dev/null | jq -r '.digest'); then
+              if [ "$resolved" != "$digest" ]; then
+                echo "::error::$API_IMAGE:$tag resolves to $resolved, not to the verified digest $digest"
+                exit 1
+              fi
+              echo "$API_IMAGE:$tag resolves to the verified digest $digest"
+            else
+              echo "::warning::Could not read $API_IMAGE:$tag from the registry (is the package public?); its digest was not checked."
+            fi
           fi
           case "$target" in
             azure) environment=produccion ;;
@@ -117,21 +153,24 @@ jobs:
             echo "target=$target"
             echo "environment=$environment"
             echo "api_tag=$tag"
+            echo "api_digest=$digest"
             echo "check_only=$check_only"
             echo "reason=$reason"
           } >> "$GITHUB_OUTPUT"
           {
             echo "## Deploy"
-            echo "| Target | Environment | API image tag | Check only | Why |"
-            echo "|---|---|---|---|---|"
-            echo "| $target | \`$environment\` | \`$tag\`$([ "$tag" = current ] && echo ' (the one the host runs)') | $check_only | $reason |"
+            echo "| Target | Environment | API image tag | Digest | Check only | Why |"
+            echo "|---|---|---|---|---|---|"
+            echo "| $target | \`$environment\` | \`$tag\`$([ "$tag" = current ] && echo ' (the one the host runs)') | ${digest:+\`$digest\`} | $check_only | $reason |"
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$ENABLE_API_DEPLOY" != true ]; then
-            echo "::notice title=Deploy switched off::The organization variable ENABLE_API_DEPLOY is not 'true', so the deploy job is skipped and nothing touches the host."
+            echo "::notice title=Deploy switched off::The organization variable ENABLE_API_DEPLOY is not 'true'," \
+              "so the deploy job is skipped and nothing touches the host."
             {
               echo ""
               echo "**Deploy switched off:** the organization variable \`ENABLE_API_DEPLOY\` is not \`true\`, so the deploy job is skipped and nothing touches the host."
-              echo "To deploy, set it to \`true\` (Te-Tengo-Tech → Settings → Secrets and variables → Actions → Variables) and run this workflow by hand with the tag above."
+              echo "To deploy, set it to \`true\` (Te-Tengo-Tech → Settings → Secrets and variables → Actions → Variables)" \
+                "and run this workflow by hand with the tag above."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -145,7 +184,8 @@ jobs:
     # of a self-hosted runner inside admin_cidrs, or see docs/deploy.md for the alternatives.
     runs-on: ${{ vars.DEPLOY_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 40
-    # Required reviewers of `produccion` approve here, before any step runs. Branch policy: main only.
+    # Required reviewers of `produccion` approve here, before any step runs. Branch policy: release/*,
+    # hotfix/* and main.
     environment:
       name: ${{ needs.plan.outputs.environment }}
       url: ${{ needs.plan.outputs.target == 'azure' && 'https://api.tetengo.reqsai.tech' || vars.APP_URL }}

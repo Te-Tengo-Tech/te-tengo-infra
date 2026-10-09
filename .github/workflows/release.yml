@@ -1,0 +1,236 @@
+name: Release
+run-name: Release ${{ github.ref_name }}
+
+# Release pipeline of this repository's own changes (Ansible, Compose): docs/deploy.md, "Release flow".
+# A push to release/x.y.z or hotfix/x.y.z:
+#   1. check         the version (VERSION) and the static checks of ansible.yml (yamllint, ansible-lint,
+#                    syntax check, docker compose config) on the release commit. No environment.
+#   2. verify        automatic verification, no environment and no approval (there is no staging
+#                    environment: no second VM). The local container harness (make test-all, as the deploy test
+#                    of ansible.yml) deploys the release commit with site.yml to a containerized Ubuntu 24.04
+#                    host capped like the Azure VM, smoke-tests it through Caddy and checks its memory budget.
+#                    The API image is built from te-tengo-general-api's main (the released API). Always runs.
+#   3. produccion    calls deploy.yml: a configuration-only redeploy of the app role to the Azure VM with the
+#                    image the host already runs (te_tengo_api_tag=current). Its deploy job runs in the
+#                    environment `produccion` (approval) and checks /actuator/health.
+#   4. pull-request  opens the pull request release/x.y.z → main (title `release: x.y.z`). Merging it is a
+#                    human action; on main, etiquetar.yml tags vX.Y.Z. There are no deploys on main.
+#
+# Switches (organization variables, Te-Tengo-Tech → Settings → Secrets and variables → Actions → Variables;
+# explicit opt-in, unset means off). A stage that is off is skipped and the check summary says why.
+#   ENABLE_API_DEPLOY   'true' runs the produccion stage (deploy.yml gates its deploy job with it too).
+on:
+  push:
+    branches:
+      - "release/**"
+      - "hotfix/**"
+
+permissions:
+  contents: read
+
+# One release run per branch at a time. A running pipeline is never cancelled (it may be deploying); a newer
+# push waits, and replaces an older run that has not started yet.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  ANSIBLE_CORE_VERSION: 2.21.5
+  ANSIBLE_LINT_VERSION: 26.9.0
+  YAMLLINT_VERSION: 1.38.0
+  ANSIBLE_FORCE_COLOR: "1"
+  # The API the verification host runs: te-tengo-general-api's main, the API release in production.
+  API_REF: main
+
+jobs:
+  check:
+    name: Check the release (version, lint, syntax)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Version
+        id: version
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::VERSION must hold x.y.z (found '$version')"
+            exit 1
+          fi
+          if [ "${GITHUB_REF_NAME#*/}" != "$version" ]; then
+            echo "::warning::The branch $GITHUB_REF_NAME does not match VERSION $version; the release is tagged v$version."
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Install Ansible, ansible-lint and yamllint
+        run: |
+          pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
+          pipx install "ansible-lint==$ANSIBLE_LINT_VERSION"
+          pipx inject ansible-lint "ansible-core==$ANSIBLE_CORE_VERSION"
+          pipx install "yamllint==$YAMLLINT_VERSION"
+          make galaxy
+      - name: yamllint
+        run: make yamllint
+      - name: ansible-lint (production profile)
+        run: make ansible-lint
+      - name: Syntax check of the playbook
+        working-directory: ansible
+        run: ansible-playbook site.yml --syntax-check -i inventory/hosts.yml.example -e @prod.yml
+      - name: docker compose config
+        run: make compose-config
+      - name: Summary
+        if: always()
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ENABLE_API_DEPLOY: ${{ vars.ENABLE_API_DEPLOY }}
+        run: |
+          onoff() { [ "$1" = true ] && echo on || echo "**off**"; }
+          {
+            echo "## Release $VERSION ($GITHUB_REF_NAME, \`${GITHUB_SHA::7}\`)"
+            echo "| Stage | Switch | State |"
+            echo "|---|---|---|"
+            echo "| Verification (containerized host: deploy, smoke test, memory) | none, always runs | on |"
+            echo "| Produccion (configuration redeploy to the Azure VM, approval on \`produccion\`) | \`ENABLE_API_DEPLOY\` | $(onoff "$ENABLE_API_DEPLOY") |"
+            echo
+            if [ "$ENABLE_API_DEPLOY" != true ]; then
+              echo "- Produccion is **skipped**: the organization variable \`ENABLE_API_DEPLOY\` is not \`true\` (production is frozen)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    name: Verify configuration (containers)
+    needs: check
+    # Always runs; no environment and no approval.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      TT_API_SRC: ${{ github.workspace }}/te-tengo-general-api
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check out te-tengo-general-api (${{ env.API_REF }})
+        uses: actions/checkout@v7
+        with:
+          repository: Te-Tengo-Tech/te-tengo-general-api
+          ref: ${{ env.API_REF }}
+          # The API repository is public; API_REPO_TOKEN (read-only Contents) only if it becomes private.
+          token: ${{ secrets.API_REPO_TOKEN || github.token }}
+          path: te-tengo-general-api
+          persist-credentials: false
+      - name: Install Ansible
+        run: |
+          pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
+          make galaxy
+      - name: Start the test host and Floci
+        run: make test-host-up
+      - name: Deploy with site.yml
+        run: make test-deploy
+      - name: Smoke test
+        run: make test-smoke | tee smoke.txt
+      - name: Memory of the host and the stack
+        run: make test-memory | tee memory.txt
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Verification: containerized host"
+            api_commit=$(git -C te-tengo-general-api rev-parse --short HEAD 2>/dev/null || echo 'not checked out')
+            echo "Release commit \`${GITHUB_SHA::7}\` deployed with \`site.yml\` to the test host (Ubuntu 24.04, systemd, SSH,"
+            echo "1 GiB like the Azure VM), API from te-tengo-general-api \`$API_REF\` ($api_commit)."
+            echo '```'
+            sed -n '/== Summary/,$p' smoke.txt 2>/dev/null || echo "No smoke test output"
+            echo '```'
+            if [ -s memory.txt ]; then
+              echo '```'
+              cat memory.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Logs of the stack on failure
+        if: failure()
+        run: docker exec -w /opt/te-tengo tt-test-host docker compose logs --tail 200 || true
+      - name: Tear down
+        if: always()
+        run: make test-down
+
+  produccion:
+    name: Produccion (configuration redeploy)
+    needs: [check, verify]
+    # Switch: ENABLE_API_DEPLOY. The verification must have passed.
+    if: >-
+      !cancelled()
+      && needs.check.result == 'success'
+      && needs.verify.result == 'success'
+      && vars.ENABLE_API_DEPLOY == 'true'
+    # deploy.yml's deploy job runs in the environment `produccion` (required reviewers approve there).
+    uses: ./.github/workflows/deploy.yml
+    permissions:
+      contents: read
+      # Requested by deploy.yml's (inactive) AWS job; unused for the Azure target.
+      id-token: write
+    with:
+      target: azure
+      api_tag: ""
+      check_only: false
+      reason: te-tengo-infra release ${{ needs.check.outputs.version }} (${{ github.ref_name }}, commit ${{ github.sha }})
+
+  pull-request:
+    name: Open the release pull request (→ main)
+    needs: [check, verify, produccion]
+    # After every stage that ran passed (a skipped produccion is fine: its switch is off).
+    if: >-
+      !cancelled()
+      && needs.check.result == 'success'
+      && !contains(needs.*.result, 'failure')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.check.outputs.version }}
+      PRODUCCION: ${{ needs.produccion.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Open or update the pull request
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/body.md"
+          verification="containerized host (\`make test-all\`): \`site.yml\` deployed the release commit, the smoke test through Caddy passed"
+          if [ "$PRODUCCION" = success ]; then
+            produccion="configuration redeploy of the app role to the Azure VM with the API image it already runs (\`current\`),"
+            produccion+=" approved on \`produccion\`; see the run for the health check"
+          else
+            produccion="**not deployed** (\`ENABLE_API_DEPLOY\` is off)"
+          fi
+          cat > "$body" <<EOF
+          Release **$VERSION** of te-tengo-infra from \`$GITHUB_REF_NAME\` at $GITHUB_SHA.
+
+          | Stage | What happened |
+          |---|---|
+          | Check | version, yamllint, ansible-lint, syntax check, \`docker compose config\` |
+          | Verification | $verification |
+          | Produccion | $produccion |
+
+          Merging this pull request tags \`v$VERSION\` and creates the GitHub Release from CHANGELOG.md (etiquetar.yml),
+          then opens the back-merge into \`develop\`. Nothing is deployed on \`main\`.
+
+          Pipeline run: $RUN_URL
+          EOF
+          number=$(gh pr list -R "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh pr edit "$number" -R "$GITHUB_REPOSITORY" --body-file "$body"
+            echo "Updated the description of pull request #$number." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            url=$(gh pr create -R "$GITHUB_REPOSITORY" --base main --head "$GITHUB_REF_NAME" --title "release: $VERSION" --body-file "$body")
+            echo "Opened $url" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
