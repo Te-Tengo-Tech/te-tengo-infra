@@ -160,18 +160,19 @@ run "nsg_rules" {
     error_message = "SSH must be open only to admin_cidrs."
   }
 
-  # Inbound allows: exactly 80/TCP, 443/TCP, 443/UDP and 8322/TCP from anywhere, plus SSH.
+  # Inbound allows: exactly 80/TCP, 443/TCP, 443/UDP, 8322/TCP and 8189/UDP+TCP (WebRTC) from anywhere,
+  # plus SSH.
   assert {
     condition = toset([
       for rule in azurerm_network_security_group.app.security_rule : "${rule.protocol}/${rule.destination_port_range}"
       if rule.direction == "Inbound" && rule.access == "Allow" && contains(rule.source_address_prefixes, "0.0.0.0/0")
-    ]) == toset(["Tcp/80", "Tcp/443", "Udp/443", "Tcp/8322"])
-    error_message = "Only 80/TCP, 443/TCP, 443/UDP and 8322/TCP may be open to the Internet."
+    ]) == toset(["Tcp/80", "Tcp/443", "Udp/443", "Tcp/8322", "Udp/8189", "Tcp/8189"])
+    error_message = "Only 80/TCP, 443/TCP, 443/UDP, 8322/TCP and 8189/UDP+TCP may be open to the Internet."
   }
 
   assert {
-    condition     = length(azurerm_network_security_group.app.security_rule) == 5 && alltrue([for rule in azurerm_network_security_group.app.security_rule : rule.direction == "Inbound" && rule.access == "Allow"])
-    error_message = "The NSG must hold exactly the five inbound allow rules (outbound keeps the defaults)."
+    condition     = length(azurerm_network_security_group.app.security_rule) == 7 && alltrue([for rule in azurerm_network_security_group.app.security_rule : rule.direction == "Inbound" && rule.access == "Allow"])
+    error_message = "The NSG must hold exactly the seven inbound allow rules (outbound keeps the defaults)."
   }
 }
 
@@ -211,6 +212,7 @@ run "inventory_shape" {
       push_provider                = "fcm"
       sns_platform_application_arn = ""
       live_view_publish_port       = 8322
+      live_view_webrtc_port        = 8189
     }
     error_message = "The rendered inventory does not match docs/interface-terraform-ansible.md."
   }
@@ -414,4 +416,30 @@ run "rejects_plain_http_endpoint" {
   }
 
   expect_failures = [var.object_storage_endpoint]
+}
+
+run "webrtc_port_follows_the_variable" {
+  command = apply
+
+  variables {
+    live_view_webrtc_port = 20000
+  }
+
+  assert {
+    condition = toset([
+      for rule in azurerm_network_security_group.app.security_rule : "${rule.protocol}/${rule.destination_port_range}"
+      if startswith(rule.name, "allow-webrtc")
+    ]) == toset(["Udp/20000", "Tcp/20000"]) && yamldecode(output.ansible_inventory).all.children.te_tengo.hosts["te-tengo-prod"].live_view_webrtc_port == 20000
+    error_message = "The WebRTC rules and the inventory must follow live_view_webrtc_port."
+  }
+}
+
+run "rejects_a_privileged_webrtc_port" {
+  command = plan
+
+  variables {
+    live_view_webrtc_port = 443
+  }
+
+  expect_failures = [var.live_view_webrtc_port]
 }

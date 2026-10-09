@@ -29,12 +29,21 @@
       - app_rtsps_port | int > 0
       - app_hls_allow_origins | length > 0
       - app_hls_allow_origins | select('search', '[,\\s]') | list | length == 0
+      - app_webrtc_port | int >= 1024 and app_webrtc_port | int <= 65535
+      - app_webrtc_port | int not in [app_rtsps_port | int, app_http_port | int, app_https_port | int]
+      - app_webrtc_additional_hosts is sequence and app_webrtc_additional_hosts is not string
+      - app_webrtc_additional_hosts | length > 0
+      - app_webrtc_additional_hosts | select('match', '^[A-Za-z0-9.:-]+$') | list | length == app_webrtc_additional_hosts | length
+      - app_webrtc_allow_origins | length > 0
+      - app_webrtc_allow_origins | select('search', '[,\\s]') | list | length == 0
     fail_msg: >-
       Missing or invalid settings. From the Terraform inventory: app_hostname, clips_s3_bucket,
       object_storage_region (or aws_region), object_storage_auth (static or instance_role),
       object_storage_endpoint (an http(s) URL without a path, or empty for AWS), memory_profile (one of
       {{ app_memory_profiles.keys() | join(', ') }}), push_provider (fcm, sns or registro; sns needs
-      sns_platform_application_arn and aws_region) and live_view_publish_port. From
+      sns_platform_application_arn and aws_region), live_view_publish_port and live_view_webrtc_port
+      (1024-65535, not another public port), with public_ip or app_hostname for the WebRTC addresses
+      (te_tengo_webrtc_additional_hosts, a list of IPs or names). From
       group_vars/te_tengo/vars.yml: te_tengo_acme_email, te_tengo_api_source (registry, archive or build),
       te_tengo_registry_auth (none or login), te_tengo_api_tag (an image tag, or current) and te_tengo_api_digest
       (empty or sha256:<64 hex>), the mail provider (smtp needs te_tengo_smtp_sender and

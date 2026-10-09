@@ -37,3 +37,5 @@ base_host_firewall_ports:
   - { protocol: tcp, port: "443" }
   - { protocol: udp, port: "443" }
   - { protocol: tcp, port: "{{ te_tengo_rtsps_port | default(8322) | string }}" }
+  - { protocol: udp, port: "{{ te_tengo_webrtc_port | default(8189) | string }}" }
+  - { protocol: tcp, port: "{{ te_tengo_webrtc_port | default(8189) | string }}" }
