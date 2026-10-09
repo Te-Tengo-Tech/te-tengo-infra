@@ -34,8 +34,9 @@ te_tengo_dir: /opt/te-tengo
 # Let's Encrypt account e-mail (expiry notices). Required.
 te_tengo_acme_email: ""
 
-# API image: published by te-tengo-general-api's release workflow. Pin a release or commit tag for
-# production deploys (`-e te_tengo_api_tag=...`).
+# API image: published by te-tengo-general-api's image workflow. Pin a release or commit tag for
+# production deploys (`-e te_tengo_api_tag=sha-<short commit>`); `current` keeps the registry tag the host
+# already runs (production default, prod.yml).
 te_tengo_api_repository: ghcr.io/te-tengo-tech/te-tengo-general-api
 te_tengo_api_tag: latest
 # registry (pull te_tengo_api_repository:te_tengo_api_tag), archive (docker load a file from the
