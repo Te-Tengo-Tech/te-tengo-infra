@@ -70,7 +70,7 @@ jobs:
 
       - name: Syntax check of the playbook
         working-directory: ansible
-        run: ansible-playbook site.yml --syntax-check -i inventory/hosts.yml.example
+        run: ansible-playbook site.yml --syntax-check -i inventory/hosts.yml.example -e @prod.yml
 
       - name: docker compose config
         run: make compose-config

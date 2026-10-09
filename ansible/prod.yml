@@ -1,0 +1,42 @@
+---
+# Production settings (Azure VM, https://api.tetengo.reqsai.tech) that are NOT secret and NOT in the
+# Terraform inventory. Committed so that every production deploy, from GitHub Actions (deploy.yml, GitHub
+# environment `produccion`) or from the operator's machine (`make deploy` / `make redeploy`, which pass
+# this file), renders the same configuration. Passed as extra vars (-e @prod.yml), like test/vars.yml, so
+# it wins over group_vars; it is not in group_vars/te_tengo because that group also holds the local test
+# host and the inactive OCI and AWS hosts. Secrets stay in group_vars/te_tengo/vault.yml (Ansible Vault);
+# the operator's own overrides (SSH key path, an image archive) go in the untracked prod.local.yml, passed
+# after this file.
+
+# API image from GHCR (public package: no registry credentials). `current` keeps the tag the host already
+# runs (read from /opt/te-tengo/.env; roles/app/tasks/current-tag.yml), so a configuration-only deploy never
+# changes the image. A new image is deployed with `-e te_tengo_api_tag=sha-<short commit>`.
+te_tengo_api_source: registry
+te_tengo_registry_auth: none
+te_tengo_api_tag: current
+
+# Let's Encrypt account e-mail (expiry notices).
+te_tengo_acme_email: jhosepmyrgutierrezsoto@gmail.com
+
+# Push through Firebase Cloud Messaging (the service-account key is in the vault).
+te_tengo_push_provider: fcm
+
+# E-mail: no SMTP relay yet (te_tengo_smtp_host empty), so e-mails are only logged (`registro`).
+
+# The PWA (app.tetengo.reqsai.tech, the landing page and the Cloudflare Pages build) reads HLS and calls
+# the API from another origin: the same origins for MediaMTX and for the API's CORS.
+te_tengo_hls_allow_origins:
+  - https://app.tetengo.reqsai.tech
+  - https://tetengo.reqsai.tech
+  - https://te-tengo.pages.dev
+te_tengo_api_settings:
+  TT_CORS_ORIGENES: https://app.tetengo.reqsai.tech,https://tetengo.reqsai.tech,https://te-tengo.pages.dev
+  TT_PWA_URL: https://app.tetengo.reqsai.tech/
+  TT_ENLACE_BASE: "https://app.tetengo.reqsai.tech/#"
+
+# Public half of the GitHub Actions deploy key (private half: secret DEPLOY_SSH_PRIVATE_KEY of the
+# `produccion` environment), installed for `ubuntu` by the base role (an operator run of
+# `make deploy ANSIBLE_ARGS="--tags authorized_keys"`). No forwarding of any kind; GitHub-hosted runners
+# have no fixed address, so there is no from= restriction (docs/deploy.md).
+te_tengo_authorized_keys:
+  - no-agent-forwarding,no-port-forwarding,no-X11-forwarding ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAsbfa/R4N2T8EVLAi5SbW13sAntQM2tWBpph0At9l9y te-tengo-deploy
