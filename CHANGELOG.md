@@ -3,6 +3,9 @@
 Format based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/); the project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.2.2] - 2026-10-10
+
 ### Changed
 - An infra release (and its rollback) deploys the **whole `site.yml`** (base, docker, app and backup; every role is idempotent), the same playbook its verification ran on the containerized host. A base-role change (zswap, masked services, firewall, swap) now reaches the VM with its release; hotfix 0.2.1's needed an operator's `--tags base`. API image deploys (`desplegar-api`) still run only the app role. `deploy.yml` takes a `roles` input (`app` or `all`).
 - One production deploy at a time is now enforced by `.github/scripts/deploy-lock.sh`, the first step of the deploy job, which runs only after the `produccion` approval, instead of the job's concurrency group: a job holds its group while it waits for reviewers, so an API deploy dispatched behind an unapproved infra release stayed queued, and a third request cancelled the waiting one. `produccion.yml` and `rollback.yml` lost their workflow-level `produccion` group for the same reason.
@@ -22,7 +25,6 @@ Format based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/); 
 
 ### Security
 - Every action is pinned by commit SHA; no permissions at workflow level and the minimum per job.
-
 
 ## [0.2.1] - 2026-10-10
 
