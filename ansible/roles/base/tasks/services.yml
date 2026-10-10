@@ -1,0 +1,29 @@
+---
+# Disable, stop and mask host services a single cloud VM never uses (base_unused_services, on Azure and
+# OCI). Only the units the image has are touched. A missing unit is skipped and never fails the run.
+# Masking (a link to /dev/null) also stops D-Bus or socket activation from starting them again. It is
+# undone with `systemctl unmask <unit>`.
+- name: Find which unused host services are installed
+  ansible.builtin.command:
+    argv: "{{ ['systemctl', 'list-unit-files', '--no-legend', '--no-pager', '--full'] + base_unused_services }}"
+  register: base_unused_unit_files
+  changed_when: false
+  # systemctl exits 1 when none of the units exists.
+  failed_when: base_unused_unit_files.rc not in [0, 1]
+  check_mode: false
+
+- name: Disable the unused host services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+  loop: "{{ base_unused_services }}"
+  # Only units that are enabled now: a masked, static or missing unit has nothing to disable.
+  when: base_unused_unit_files.stdout_lines | select('match', (item | regex_escape) ~ ' +enabled(-runtime)?( |$)') | list | length > 0
+
+- name: Stop and mask the unused host services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    masked: true
+  loop: "{{ base_unused_services }}"
+  when: base_unused_unit_files.stdout_lines | select('match', (item | regex_escape) ~ ' ') | list | length > 0

@@ -37,6 +37,19 @@ base_zswap_max_pool_percent: 20
 # Writes cold compressed pages back to the swap file under memory pressure. This is the default in Ubuntu
 # kernels (CONFIG_ZSWAP_SHRINKER_DEFAULT_ON=y), and is set again here for kernels built without it.
 base_zswap_shrinker_enabled: true
+# Host services a single cloud VM never uses, disabled and masked on Azure and OCI. multipathd is for
+# storage reached over several paths (SAN, iSCSI). This VM has one OS disk, attached once through Azure's
+# storage stack, and no data disks (modules/te-tengo-azure). fwupd updates firmware, which Azure and OCI
+# manage. ModemManager is for cellular modems, and udisks2 is for desktop disk mounting. Masking also
+# stops D-Bus from starting them on demand. A unit the image does not have is skipped.
+base_disable_unused_services: "{{ (te_tengo_cloud_provider | default('')) in ['azure', 'oci'] }}"
+base_unused_services:
+  - multipathd.socket
+  - multipathd.service
+  - fwupd-refresh.timer
+  - fwupd.service
+  - ModemManager.service
+  - udisks2.service
 base_journald_max_use: 200M
 # Reboot automatically at this time when an unattended upgrade needs it (kernel); "" to never reboot.
 base_automatic_reboot_time: "09:00"  # 04:00 in Lima
