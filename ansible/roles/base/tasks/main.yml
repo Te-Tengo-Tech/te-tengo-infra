@@ -84,6 +84,25 @@
     label: "{{ item.name }}"
   when: base_manage_sysctl | bool
 
+# The local test host is a container that shares the kernel of Docker's VM (or of the CI runner), and
+# test/vars.yml turns these tasks off there. The sysfs check also skips kernels built without zswap.
+- name: Look for zswap in the running kernel
+  ansible.builtin.stat:
+    path: "{{ base_zswap_params_dir }}"
+    get_checksum: false
+  register: base_zswap_sysfs
+  when: base_manage_zswap | bool
+
+- name: Enable zswap
+  ansible.builtin.include_tasks: zswap.yml
+  when:
+    - base_manage_zswap | bool
+    - base_zswap_sysfs.stat.isdir | default(false)
+
+- name: Disable the host services a cloud VM does not use
+  ansible.builtin.include_tasks: services.yml
+  when: base_disable_unused_services | bool
+
 - name: Open the public ports in the OCI image's host firewall
   ansible.builtin.include_tasks: firewall.yml
   when: base_manage_oci_firewall | bool
