@@ -1,0 +1,18 @@
+# Managed by Ansible (role base). Writes the zswap parameters to sysfs early at every boot. Ubuntu
+# kernels build zswap in but leave it off, and these parameters do not persist across reboots.
+[Unit]
+Description=Te Tengo: zswap, the compressed swap cache
+Documentation=https://docs.kernel.org/admin-guide/mm/zswap.html man:systemd.service(5)
+ConditionPathIsDirectory={{ base_zswap_params_dir }}
+DefaultDependencies=no
+After=local-fs.target systemd-modules-load.service
+Before=sysinit.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/te-tengo-zswap
+
+[Install]
+WantedBy=sysinit.target

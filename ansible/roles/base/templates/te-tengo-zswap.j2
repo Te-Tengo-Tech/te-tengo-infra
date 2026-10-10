@@ -1,0 +1,56 @@
+#!/bin/sh
+# Managed by Ansible (role base). Turns zswap on, the compressed cache in front of the swap file, by
+# writing its module parameters to sysfs (docs: https://docs.kernel.org/admin-guide/mm/zswap.html).
+# te-tengo-zswap.service runs it at every boot. Each value is read back, so a compressor or pool type
+# the kernel rejects falls through to the next one instead of failing.
+set -u
+
+params={{ base_zswap_params_dir }}
+
+if [ ! -d "$params" ]; then
+  echo "zswap is not available in this kernel ($params is missing); nothing to do"
+  exit 0
+fi
+
+# set <parameter> <value>: write the value and succeed only if the kernel kept it.
+set_param() {
+  [ -w "$params/$1" ] || return 1
+  printf '%s' "$2" 2>/dev/null > "$params/$1" || true
+  [ "$(cat "$params/$1" 2>/dev/null)" = "$2" ]
+}
+
+# Pool allocator: only kernels before 6.18 have the parameter (zsmalloc is the only pool after that).
+if [ -e "$params/zpool" ] && ! set_param zpool {{ base_zswap_zpool }}; then
+  echo "zswap: pool {{ base_zswap_zpool }} not available, keeping $(cat "$params/zpool")" >&2
+fi
+
+# Compressor: the first one the kernel accepts. zstd and lz4 are modules that the kernel loads on demand.
+compressor=""
+for candidate in {{ base_zswap_compressors | join(' ') }}; do
+  if set_param compressor "$candidate"; then
+    compressor=$candidate
+    break
+  fi
+done
+if [ -z "$compressor" ]; then
+  echo "zswap: none of {{ base_zswap_compressors | join(', ') }} is available, keeping $(cat "$params/compressor")" >&2
+fi
+
+set_param max_pool_percent {{ base_zswap_max_pool_percent }} \
+  || echo "zswap: could not set max_pool_percent to {{ base_zswap_max_pool_percent }}" >&2
+
+if [ -e "$params/shrinker_enabled" ]; then
+  set_param shrinker_enabled {{ 'Y' if base_zswap_shrinker_enabled | bool else 'N' }} \
+    || echo "zswap: could not set shrinker_enabled" >&2
+fi
+
+if ! set_param enabled Y; then
+  echo "zswap: the kernel refused to enable zswap" >&2
+  exit 1
+fi
+
+for name in enabled compressor zpool max_pool_percent accept_threshold_percent shrinker_enabled; do
+  if [ -e "$params/$name" ]; then
+    echo "zswap $name=$(cat "$params/$name")"
+  fi
+done

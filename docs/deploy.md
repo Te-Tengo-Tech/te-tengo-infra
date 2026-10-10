@@ -170,6 +170,11 @@ A temporary NSG rule managed from the workflow (Azure credentials through GitHub
 - Restore: `sudo te-tengo-restore /var/backups/te-tengo/te-tengo-<stamp>.dump` or `sudo te-tengo-restore latest` (newest dump in R2; the backups token can read). It stops the API, recreates the database, restores and starts the API. Test a restore after the first week.
 - Credit watch: the remaining Azure for Students credit and its use per service on the [Azure Sponsorships balance page](https://www.microsoftazuresponsorships.com/balance) after the first week and every month (the VM hours should not appear; the IP and the disk do; [terraform.md](terraform.md#cost-what-the-credit-pays)); R2 usage in the Cloudflare dashboard (10 GB-month free).
 - Memory: `free -m` and `sudo docker stats --no-stream` on the host; `swapon --show` shows the 2 GiB swap file. If the API restarts with `OutOfMemoryError` or the host swaps constantly, resize to `Standard_B2als_v2` ([terraform.md](terraform.md#runbook-first-apply-on-azure-operator), *Resize*).
+- Host tuning (base role: zswap, [ansible.md](ansible.md#memory-profiles)): the Deploy workflow runs only the `app` role, so a change to the `base` role reaches the VM only when an operator runs `make deploy ANSIBLE_ARGS="--tags base"` (it asks for the vault password and uses `prod.yml`). Then check it on the VM:
+  - `cat /sys/module/zswap/parameters/{enabled,compressor,max_pool_percent,shrinker_enabled}` should print `Y`, `zstd` (or `lz4`/`lzo` if the module is missing), `20` and `Y`.
+  - `systemctl status te-tengo-zswap` should be `active (exited)`, and `journalctl -u te-tengo-zswap -b` shows the values the script applied.
+  - `grep -E 'zswap|zswpin|zswpout' /proc/meminfo /proc/vmstat` shows the pool size and how many pages go through zswap.
+  - `sudo grep -r . /sys/kernel/debug/zswap/` shows the debugfs counters: `stored_pages`, `pool_total_size` and the reject reasons.
 
 ## 6. Rollback
 | What broke | Rollback |

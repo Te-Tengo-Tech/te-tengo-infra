@@ -16,6 +16,27 @@ base_manage_sysctl: true
 base_swap_file: /swapfile
 base_swap_size_mb: "{{ te_tengo_memory_profiles[te_tengo_memory_profile].swap_size_mb }}"
 base_swappiness: 10
+# zswap: a compressed cache in RAM in front of the swap file. Pages on their way to swap are compressed
+# into a pool capped at base_zswap_max_pool_percent of RAM, and only the coldest go on to the disk. That
+# turns most swap-ins on the 1 GiB Azure VM (Standard SSD) into decompressions in RAM.
+# Docs: https://docs.kernel.org/admin-guide/mm/zswap.html (Documentation/admin-guide/mm/zswap.rst).
+# Ubuntu 24.04 kernels, linux-azure included (6.8 and the 7.0 that linux-azure now tracks), build zswap in
+# (CONFIG_ZSWAP=y) but leave it off at boot (CONFIG_ZSWAP_DEFAULT_ON is not set). Their default compressor
+# is lzo, built in. zstd and lz4 are modules the kernel loads on demand. On 6.8 the default pool is zbud,
+# and zsmalloc is built in. 6.18 and later have zsmalloc only, with no zpool parameter.
+# The te-tengo-zswap.service oneshot unit writes the parameters to sysfs at every boot. Ansible enables
+# and starts it, so zswap is on at once, with no reboot and no kernel command line. The tasks are skipped
+# when the kernel has no zswap (no base_zswap_params_dir) or when base_manage_zswap is false.
+base_manage_zswap: true
+base_zswap_params_dir: /sys/module/zswap/parameters
+# The first compressor the kernel accepts wins. lzo is built into every Ubuntu kernel.
+base_zswap_compressors: [zstd, lz4, lzo]
+# Only written where the kernel still has the zpool parameter (before 6.18).
+base_zswap_zpool: zsmalloc
+base_zswap_max_pool_percent: 20
+# Writes cold compressed pages back to the swap file under memory pressure. This is the default in Ubuntu
+# kernels (CONFIG_ZSWAP_SHRINKER_DEFAULT_ON=y), and is set again here for kernels built without it.
+base_zswap_shrinker_enabled: true
 base_journald_max_use: 200M
 # Reboot automatically at this time when an unattended upgrade needs it (kernel); "" to never reboot.
 base_automatic_reboot_time: "09:00"  # 04:00 in Lima
