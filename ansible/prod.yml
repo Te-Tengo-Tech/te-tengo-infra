@@ -39,6 +39,9 @@ te_tengo_api_settings:
   TT_CORS_ORIGENES: https://app.tetengo.reqsai.tech,https://tetengo.reqsai.tech,https://te-tengo.pages.dev
   TT_PWA_URL: https://app.tetengo.reqsai.tech/
   TT_ENLACE_BASE: "https://app.tetengo.reqsai.tech/#"
+  # Desktop agent release that GET /api/agente/configuracion publishes (the API's default is 0.2.0). Agents
+  # only log a difference. Raise it when a new desktop agent release reaches production.
+  TT_AGENTE_VERSION_PUBLICADA: "0.4.1"
 
 # Public half of the GitHub Actions deploy key (private half: secret DEPLOY_SSH_PRIVATE_KEY of the
 # `produccion` environment), installed for `ubuntu` by the base role (an operator run of
