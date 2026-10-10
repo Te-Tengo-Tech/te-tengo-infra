@@ -180,7 +180,7 @@ jobs:
   back-merge:
     name: Back-merge into develop
     needs: [candidate, release]
-    if: needs.release.result == 'success'
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
