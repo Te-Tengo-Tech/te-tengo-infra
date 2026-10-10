@@ -4,6 +4,9 @@ Format based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/); 
 
 ## [Unreleased]
 
+### Security
+- A manual run of `ansible.yml` no longer takes an `api_ref`: it always builds te-tengo-general-api's `develop`, so a dispatch cannot run an arbitrary branch's code in the default branch's context (CodeQL `actions/cache-poisoning/poisonable-step`, 6 alerts).
+
 ### Added
 - A weekly `branch-cleanup.yml` (Mondays 04:00 UTC, or by hand with a dry run) deletes branches merged 7+ days ago and unmerged branches with no commits for 30+ days; it never touches `main`, `develop`, `release/*`, `hotfix/*`, branches with an open pull request or pull requests labelled `do-not-delete`, and `BRANCH_CLEANUP_ENABLED=false` turns it off.
 
