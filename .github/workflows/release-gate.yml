@@ -1,0 +1,45 @@
+name: Release gate
+
+# Required check `release-gate` of the pull requests into main (docs/deploy.md). A release or hotfix pull
+# request may be merged only when merging it puts into main exactly the tree of a verified release candidate
+# (release.yml deployed that commit with site.yml to the containerized host and smoke-tested it), which is
+# the candidate produccion.yml then deploys. It fails while the candidate of the head commit is still being
+# verified; release.yml edits the pull request when the candidate is ready (as te-tengo-release-bot),
+# and that `edited` event runs this check again. Nothing is tested here: release.yml already checked and verified the
+# candidate's commit.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: release-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  release-gate:
+    name: release-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            VERSION
+            .github/scripts
+          sparse-checkout-cone-mode: false
+      - name: A verified candidate has the tree this merge puts into main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: .github/scripts/release-gate.sh "$(tr -d '[:space:]' < VERSION)" .github/scripts/find-candidate.sh
