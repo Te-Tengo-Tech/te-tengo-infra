@@ -1,0 +1,58 @@
+# Weekly dependency updates, opened against `develop`: GitHub Actions (pinned by commit SHA), the Terraform
+# providers and modules of every configuration, the test stack's images and the test host's base image.
+# Minor and patch updates arrive grouped in one pull request; major updates arrive one by one.
+# The production images (Caddy, PostgreSQL, MediaMTX, the API) are Ansible variables
+# (ansible/roles/app/defaults), outside Dependabot's reach: they change through releases of this repository.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "develop"
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "terraform"
+    directories:
+      - "/bootstrap"
+      - "/envs/*"
+      - "/modules/*"
+    schedule:
+      interval: "weekly"
+    target-branch: "develop"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "docker-compose"
+    directories:
+      - "/compose"
+      - "/test"
+    schedule:
+      interval: "weekly"
+    target-branch: "develop"
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      compose-images:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/test/host"
+    schedule:
+      interval: "weekly"
+    target-branch: "develop"
+    commit-message:
+      prefix: "build(deps)"

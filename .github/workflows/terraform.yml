@@ -1,41 +1,16 @@
 name: Terraform
 
-# Static checks of every configuration (envs/azure, envs/oci, envs/mvp, envs/local, bootstrap and the
+# The Terraform part of CI (ci.yml calls it). Static checks of every configuration (envs/azure, envs/oci, envs/mvp, envs/local, bootstrap and the
 # modules) and an apply/destroy round trip of the AWS module against the Floci emulator. No cloud
 # credentials exist here: `terraform init -backend=false`, the Azure and OCI modules are tested with
 # mocked providers, and nothing is ever planned or applied against Azure, Oracle Cloud or AWS (the
 # Makefile's apply targets refuse to run in CI).
 
 on:
-  pull_request:
-    paths:
-      - bootstrap/**
-      - envs/**
-      - modules/**
-      - .tflint.hcl
-      - .checkov.yaml
-      - Makefile
-      - .github/workflows/terraform.yml
-  push:
-    # release/* and hotfix/* too: the release pull request to main is opened by release.yml with GITHUB_TOKEN,
-    # which starts no pull_request run, so its checks come from these pushes (same commit).
-    branches: [develop, main, "release/**", "hotfix/**"]
-    paths:
-      - bootstrap/**
-      - envs/**
-      - modules/**
-      - .tflint.hcl
-      - .checkov.yaml
-      - Makefile
-      - .github/workflows/terraform.yml
+  workflow_call:
   workflow_dispatch:
 
-concurrency:
-  group: terraform-${{ github.ref }}
-  cancel-in-progress: true
-
-permissions:
-  contents: read
+permissions: {}
 
 defaults:
   run:
@@ -51,12 +26,14 @@ jobs:
     name: fmt, validate, test, tflint, checkov
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
@@ -83,6 +60,8 @@ jobs:
     name: Apply and destroy against Floci
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     services:
       floci:
         image: floci/floci:2.2.0
@@ -93,11 +72,11 @@ jobs:
     env:
       FLOCI_ENDPOINT: http://localhost:4566
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false

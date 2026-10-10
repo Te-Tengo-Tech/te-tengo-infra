@@ -3,6 +3,26 @@
 Format based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/); the project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
+### Changed
+- An infra release (and its rollback) deploys the **whole `site.yml`** (base, docker, app and backup; every role is idempotent), the same playbook its verification ran on the containerized host. A base-role change (zswap, masked services, firewall, swap) now reaches the VM with its release; hotfix 0.2.1's needed an operator's `--tags base`. API image deploys (`desplegar-api`) still run only the app role. `deploy.yml` takes a `roles` input (`app` or `all`).
+- One production deploy at a time is now enforced by `.github/scripts/deploy-lock.sh`, the first step of the deploy job, which runs only after the `produccion` approval, instead of the job's concurrency group: a job holds its group while it waits for reviewers, so an API deploy dispatched behind an unapproved infra release stayed queued, and a third request cancelled the waiting one. `produccion.yml` and `rollback.yml` lost their workflow-level `produccion` group for the same reason.
+- After the health check, the deploy job checks on the VM that the `api` container runs the configured image and, for an image deploy, the requested digest (`.github/scripts/check-deployed-image.sh`); te-tengo-general-api tags a release only after that.
+- `produccion.yml` tags `vX.Y.Z` only after the configuration was deployed (not when `ENABLE_API_DEPLOY` is off, nor when `main` moved on meanwhile), finds its candidate with `.github/scripts/find-candidate.sh` (the same search as the release gate) and opens the back-merge as the GitHub App te-tengo-release-bot with auto-merge; after a hotfix it also opens `main → release/*` for newer release branches.
+- The release pull request is opened by te-tengo-release-bot instead of `GITHUB_TOKEN`, so its checks run. A release branch whose name differs from `VERSION` is an error.
+- CI is one workflow, `ci.yml` (required check `ci-ok`), with `ansible.yml` and `terraform.yml` as reusable parts: on pull requests the parts whose files changed, on pushes to `develop` both, and once on each release commit (called by `release.yml`, which no longer repeats the static checks). Nothing runs again on pushes to `main`, `release/**` or `hotfix/**`.
+- The containerized deploy test of pull requests runs for real: it checks out te-tengo-general-api with the workflow token (a public repository) instead of skipping itself without the `API_REPO_TOKEN` secret. It also runs the new `make test-running-image`.
+
+### Added
+- `release-gate.yml` (required check `release-gate` on `main`) and `pr-title.yml` (required check `pr-title`, Conventional Commits titles).
+- Dependabot: GitHub Actions, Terraform (`bootstrap`, `envs/*`, `modules/*`), the Compose files of `compose/` and `test/`, and the test host's base image.
+- docs/deploy.md: release gate, deploy lock, running-image check, rollback rehearsal.
+
+### Removed
+- The inactive `oci` and `aws` targets of `deploy.yml` (and its AWS OIDC job): a manual run would have created an unprotected `oci` or `mvp` environment, and every caller requested `id-token: write` only for that job. Those hosts are deployed with `make deploy`.
+
+### Security
+- Every action is pinned by commit SHA; no permissions at workflow level and the minimum per job.
+
 
 ## [0.2.1] - 2026-10-10
 

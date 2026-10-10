@@ -1,0 +1,127 @@
+name: CI
+
+# The checks of this repository, tested once per commit (docs/deploy.md):
+#   - Ansible (ansible.yml): yamllint, ansible-lint, the playbook syntax check, docker compose config and a
+#     deploy of the whole site.yml to a containerized Ubuntu host with a smoke test;
+#   - Terraform (terraform.yml): fmt, validate, terraform test, tflint, checkov and an apply/destroy round
+#     trip against Floci.
+# When:
+#   - pull requests into develop (or into a release branch): the parts whose files changed (paths below);
+#   - push to develop: both parts;
+#   - release/x.y.z and hotfix/x.y.z: release.yml calls this workflow (workflow_call) on the candidate's
+#     commit, without the containerized deploy (its verification job does that one, with the API image in
+#     production);
+#   - pull requests into main (release and hotfix): nothing runs again; release-gate.yml proves the head is
+#     the verified candidate, and only `ci-ok` runs.
+# `ci-ok` is the single required check of the rulesets: it always runs and fails unless every part that
+# had to run passed.
+on:
+  pull_request:
+  push:
+    branches: [develop]
+  workflow_call:
+    inputs:
+      deploy-test:
+        description: Run the containerized deploy test of the Ansible part
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    name: What changed
+    if: github.event_name != 'pull_request' || github.base_ref != 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      ansible: ${{ steps.paths.outputs.ansible }}
+      terraform: ${{ steps.paths.outputs.terraform }}
+    steps:
+      - name: Parts to check
+        id: paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            # Pushes to develop and release runs check everything.
+            echo "ansible=true" >> "$GITHUB_OUTPUT"
+            echo "terraform=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100" --jq '.[].filename')
+          ansible=false terraform=false
+          # The workflows are linted by the Ansible part (make yamllint covers .github/workflows).
+          grep -qE '^(ansible/|compose/|test/|ansible\.mk$|Makefile$|\.yamllint$|\.github/)' <<< "$files" && ansible=true
+          grep -qE '^(bootstrap/|envs/|modules/|\.tflint\.hcl$|\.checkov\.yaml$|Makefile$|\.github/workflows/(terraform|ci)\.yml$)' <<< "$files" && terraform=true
+          echo "ansible=$ansible" >> "$GITHUB_OUTPUT"
+          echo "terraform=$terraform" >> "$GITHUB_OUTPUT"
+          echo "Ansible part: $ansible; Terraform part: $terraform" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  ansible:
+    name: Ansible
+    needs: changes
+    if: needs.changes.outputs.ansible == 'true'
+    uses: ./.github/workflows/ansible.yml
+    permissions:
+      contents: read
+    with:
+      deploy-test: ${{ format('{0}', inputs.deploy-test) != 'false' }}
+
+  terraform:
+    name: Terraform
+    needs: changes
+    if: needs.changes.outputs.terraform == 'true'
+    uses: ./.github/workflows/terraform.yml
+    permissions:
+      contents: read
+
+  # The single required check (rulesets of develop and main). It always runs, so a skipped or cancelled
+  # part can never pass for a green one; a part is only allowed to be skipped when its files did not change.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [changes, ansible, terraform]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every CI part that had to run passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          RELEASE_PR: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result) \(.value.outputs // {} | tostring)"' <<< "$NEEDS"
+          if [ "$RELEASE_PR" = true ]; then
+            # Pull requests into main carry an already verified candidate; release-gate.yml checks it.
+            if [[ ! "$HEAD_REF" =~ ^(release|hotfix)/[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error title=Not a release branch::Only release/x.y.z and hotfix/x.y.z are merged into main; open the pull request from $HEAD_REF against develop."
+              exit 1
+            fi
+            echo "Release pull request from $HEAD_REF: its candidate was checked and verified by release.yml; release-gate decides."
+            exit 0
+          fi
+          failed=$(jq -r '
+            .changes.outputs as $want
+            | [ (if .changes.result != "success" then "changes (\(.changes.result))" else empty end),
+                (["ansible", "terraform"][] as $part
+                 | .[$part].result as $r
+                 | if ($want[$part] == "true" and $r != "success") or ($want[$part] != "true" and $r != "skipped")
+                   then "\($part) (\($r))" else empty end) ]
+            | join(", ")' <<< "$NEEDS")
+          if [ -n "$failed" ]; then
+            echo "::error title=CI failed::Not passed: $failed."
+            exit 1
+          fi
+          echo "Every CI part that had to run passed."

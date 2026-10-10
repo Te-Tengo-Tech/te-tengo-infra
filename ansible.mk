@@ -31,7 +31,7 @@ TEST_PLAYBOOK   := cd $(ANSIBLE_DIR) && ANSIBLE_SSH_ARGS="$(TEST_SSH_ARGS)" ansi
 	-e cloud_provider=$(TEST_CLOUD) -e memory_profile=$(TEST_MEMORY_PROFILE)
 
 .PHONY: galaxy ansible-lint yamllint compose-config ansible-check deploy redeploy backup-now \
-	test-host-up test-image test-deploy test-smoke test-memory test-down test-all
+	test-host-up test-image test-deploy test-smoke test-memory test-running-image test-down test-all
 
 galaxy: ## Install the Ansible collections (requirements.yml)
 	cd $(ANSIBLE_DIR) && ansible-galaxy collection install -r requirements.yml
@@ -81,8 +81,11 @@ test-smoke: ## Smoke test from the Mac through Caddy (HTTPS, sign-in, clips on F
 test-memory: ## Memory of the test host and of each container of the stack (after test-deploy)
 	test/memory.sh
 
+test-running-image: ## Check that the api container on the test host runs the configured image (after test-deploy)
+	cd $(ANSIBLE_DIR) && ANSIBLE_SSH_ARGS="$(TEST_SSH_ARGS)" ../.github/scripts/check-deployed-image.sh "" -i ../test/inventory.yml
+
 test-down: ## Remove the test host, Floci and their volumes
 	$(TEST_COMPOSE) down --volumes --remove-orphans
 	rm -rf test/.work
 
-test-all: test-host-up test-deploy test-smoke test-memory ## Up, deploy, smoke test and memory report in one go
+test-all: test-host-up test-deploy test-smoke test-memory test-running-image ## Up, deploy, smoke test, memory report and running image check in one go
