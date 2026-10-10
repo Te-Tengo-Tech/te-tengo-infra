@@ -5,40 +5,47 @@ run-name: >-
   ${{ github.event_name == 'repository_dispatch'
   && format('Deploy API {0} ({1}) to produccion [{2}]', github.event.client_payload.version || 'no version',
   github.event.client_payload.tag || github.event.client_payload.digest, github.event.client_payload.request || 'no request')
-  || format('Deploy API {0} to {1}{2}', inputs.api_digest || inputs.api_tag || 'current', inputs.target,
-  inputs.config_ref && format(' (configuration {0})', inputs.config_ref) || '') }}
+  || format('Deploy {0} with API {1}{2}', inputs.roles == 'all' && 'every role' || 'the app role',
+  inputs.api_digest || inputs.api_tag || 'current', inputs.config_ref && format(' (configuration {0})', inputs.config_ref) || '') }}
 
-# Production deploy of the app role (Ansible over SSH; no Terraform runs here). Runbook: docs/deploy.md.
-# Every production run waits for a required reviewer on the GitHub environment `produccion` before the
-# job starts, so nothing touches the VM without approval. The app role pins the API image by digest and,
-# when the image differs from the one running, dumps the database first (te-tengo-backup.service).
-# - repository_dispatch `desplegar-api`: sent by te-tengo-general-api after the merge of a release to its main
-#   (produccion.yml, the verified candidate) or by its rollback.yml (an earlier release);
-#   client_payload {digest: sha256:..., tag: x.y.z-rc.N or x.y.z, version: x.y.z, ref: <commit>,
-#   kind: release|rollback, request: "api <run id>.<attempt>"}. Deploys repository:tag@digest to production
-#   (Azure); the API workflow waits for this run's result before it tags the release.
-# - workflow_call: this repository's produccion.yml (push to main) redeploys the configuration of an infra
-#   release with the image the host already runs (api_tag empty = current); rollback.yml redeploys the
-#   configuration of an earlier tag (config_ref).
-# - workflow_dispatch: any tag and/or digest (both empty = current), any target, optional check mode.
-# Targets: azure (production, environment `produccion`: plain SSH with a dedicated deploy key and a pinned
-# host key, the committed ansible/prod.yml); oci (inactive alternative, environment `oci`, same SSH path,
-# without prod.yml); aws (inactive alternative, environment `mvp`: GitHub OIDC -> AWS role -> SSH over SSM).
-# Inert until the environment is configured: without its variables and secrets the job ends with a notice.
+# Production deploy to the Azure VM (Ansible over SSH; no Terraform runs here). Runbook: docs/deploy.md.
+# Every run waits for a required reviewer on the GitHub environment `produccion` before the deploy job starts,
+# so nothing touches the VM without approval. The app role pins the API image by digest and, when the image
+# differs from the one running, dumps the database first (te-tengo-backup.service).
+# - repository_dispatch `desplegar-api`: sent (as the GitHub App te-tengo-release-bot) by te-tengo-general-api
+#   after the merge of a release to its main (produccion.yml, the verified candidate) or by its rollback.yml
+#   (an earlier release); client_payload {digest: sha256:..., tag: x.y.z-rc.N or x.y.z, version: x.y.z,
+#   ref: <commit>, kind: release|rollback, request: "api <run id>.<attempt>"}. Deploys repository:tag@digest
+#   with the app role only (an image change: fast); the API workflow waits for this run's result before it
+#   tags the release.
+# - workflow_call: this repository's produccion.yml (push to main) and rollback.yml deploy the configuration of
+#   an infra release (rollback: of an earlier tag, config_ref) with the image the host already runs (api_tag
+#   empty = current) and EVERY role (roles: all = base, docker, app, backup; all idempotent), so a change to
+#   the base role (zswap, masked services, firewall, swap) reaches the VM with its release, as the release
+#   verification ran the whole site.yml too.
+# - workflow_dispatch: any tag and/or digest (both empty = current), roles app or all, optional check mode.
+#
+# One deploy at a time: the deploy job's first step (.github/scripts/deploy-lock.sh) waits while another
+# production deploy is running. It is a step, not a `concurrency` group, on purpose: a job holds its group
+# while it waits for its approval, so an API deploy dispatched behind an infra release nobody had approved yet
+# used to queue behind it (and a third request cancelled the waiting one). Now waiting for a reviewer blocks
+# nobody, and nothing is cancelled.
+#
+# After the playbook: GET /actuator/health must be UP, and .github/scripts/check-deployed-image.sh checks on
+# the VM that the running API container is the configured image and, for an image deploy, that it is the
+# requested digest. Any mismatch fails the run, so te-tengo-general-api does not tag a release that is not
+# running.
+#
 # Switch (organization variable, Te-Tengo-Tech → Settings → Secrets and variables → Actions → Variables;
-# explicit opt-in, unset means off): ENABLE_API_DEPLOY 'true' lets the deploy jobs run, for every trigger
-# and target. Any other value freezes production: the deploy job is skipped and the plan job's summary
-# says why. te-tengo-general-api gates its desplegar-api dispatch with the same variable.
+# explicit opt-in, unset means off): ENABLE_API_DEPLOY 'true' lets the deploy job run, for every trigger.
+# Any other value freezes production: the deploy job is skipped and the plan job's summary says why.
+# te-tengo-general-api gates its desplegar-api dispatch with the same variable.
 
 on:
   repository_dispatch:
     types: [desplegar-api]
   workflow_call:
     inputs:
-      target:
-        description: Where to deploy (azure is production)
-        type: string
-        default: azure
       api_tag:
         description: Tag of ghcr.io/te-tengo-tech/te-tengo-general-api; empty keeps the deployed one
         type: string
@@ -51,6 +58,14 @@ on:
         description: Commit or tag of this repository whose Ansible and Compose files are deployed; empty = the run's commit
         type: string
         default: ""
+      roles:
+        description: app (the app role only) or all (base, docker, app and backup)
+        type: string
+        default: app
+      superseded_ref:
+        description: Branch that must still point at the run's commit when the deploy starts (empty = no check)
+        type: string
+        default: ""
       check_only:
         description: Run Ansible in check mode (no change on the host)
         type: boolean
@@ -59,13 +74,12 @@ on:
         description: Why this deploy runs (shown in the summary)
         type: string
         default: ""
+    outputs:
+      deployed:
+        description: "`true` when the playbook ran and the checks passed (not in check mode, not superseded)"
+        value: ${{ jobs.deploy.outputs.deployed }}
   workflow_dispatch:
     inputs:
-      target:
-        description: Where to deploy (azure is production; oci and aws are inactive alternatives)
-        type: choice
-        options: [azure, oci, aws]
-        default: azure
       api_tag:
         description: Tag of ghcr.io/te-tengo-tech/te-tengo-general-api (x.y.z, x.y.z-rc.N or sha-<short commit>); empty keeps the deployed one
         type: string
@@ -76,13 +90,17 @@ on:
         type: string
         required: false
         default: ""
+      roles:
+        description: app (the app role only) or all (base, docker, app and backup)
+        type: choice
+        options: [app, all]
+        default: app
       check_only:
         description: Run Ansible in check mode (no change on the host)
         type: boolean
         default: false
 
-permissions:
-  contents: read
+permissions: {}
 
 defaults:
   run:
@@ -98,24 +116,24 @@ jobs:
     name: Resolve the deploy
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions: {}
     outputs:
-      target: ${{ steps.resolve.outputs.target }}
-      environment: ${{ steps.resolve.outputs.environment }}
       api_tag: ${{ steps.resolve.outputs.api_tag }}
       api_digest: ${{ steps.resolve.outputs.api_digest }}
       config_ref: ${{ steps.resolve.outputs.config_ref }}
+      roles: ${{ steps.resolve.outputs.roles }}
       check_only: ${{ steps.resolve.outputs.check_only }}
       reason: ${{ steps.resolve.outputs.reason }}
     steps:
-      - name: Target, image tag and reason
+      - name: Image, roles and reason
         id: resolve
         env:
           ENABLE_API_DEPLOY: ${{ vars.ENABLE_API_DEPLOY }}
           EVENT: ${{ github.event_name }}
-          INPUT_TARGET: ${{ inputs.target }}
           INPUT_TAG: ${{ inputs.api_tag }}
           INPUT_DIGEST: ${{ inputs.api_digest }}
           INPUT_CONFIG_REF: ${{ inputs.config_ref }}
+          INPUT_ROLES: ${{ inputs.roles }}
           INPUT_CHECK_ONLY: ${{ inputs.check_only }}
           INPUT_REASON: ${{ inputs.reason }}
           PAYLOAD_TAG: ${{ github.event.client_payload.tag }}
@@ -127,7 +145,7 @@ jobs:
         run: |
           digest="" config_ref=""
           if [ "$EVENT" = repository_dispatch ]; then
-            target=azure; tag="${PAYLOAD_TAG:-current}"; check_only=false; digest="$PAYLOAD_DIGEST"
+            tag="${PAYLOAD_TAG:-current}"; check_only=false; digest="$PAYLOAD_DIGEST"; roles=app
             if [[ ! "$PAYLOAD_REF" =~ ^[0-9a-f]{7,40}$ ]]; then
               echo "::error::client_payload.ref must be a commit SHA of te-tengo-general-api"
               exit 1
@@ -151,9 +169,9 @@ jobs:
             esac
             commit_url="https://github.com/Te-Tengo-Tech/te-tengo-general-api/commit/$PAYLOAD_REF"
             reason="te-tengo-general-api $what, commit $PAYLOAD_REF ($commit_url)${PAYLOAD_REQUEST:+, request $PAYLOAD_REQUEST}"
-          elif [ -n "$INPUT_TARGET" ]; then
+          elif [ -n "$INPUT_ROLES" ]; then
             # workflow_dispatch, or workflow_call from produccion.yml or rollback.yml (whose event is the caller's).
-            target="$INPUT_TARGET"; tag="${INPUT_TAG:-current}"; check_only="$INPUT_CHECK_ONLY"
+            tag="${INPUT_TAG:-current}"; check_only="$INPUT_CHECK_ONLY"; roles="$INPUT_ROLES"
             digest="$INPUT_DIGEST"; config_ref="$INPUT_CONFIG_REF"
             reason="${INPUT_REASON:-manual run by $GITHUB_ACTOR}"
             if [ -n "$digest" ] && [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
@@ -166,6 +184,10 @@ jobs:
             fi
           else
             echo "::error::Unexpected event $EVENT without inputs"
+            exit 1
+          fi
+          if [ "$roles" != app ] && [ "$roles" != all ]; then
+            echo "::error::roles must be app or all (found '$roles')"
             exit 1
           fi
           if [[ ! "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
@@ -181,28 +203,22 @@ jobs:
               echo "::warning::Could not read $API_IMAGE@$digest from the registry (is the package public?); the host's pull decides."
             fi
           fi
-          case "$target" in
-            azure) environment=produccion ;;
-            oci) environment=oci ;;
-            aws) environment=mvp ;;
-            *) echo "::error::Unknown target $target"; exit 1 ;;
-          esac
           {
-            echo "target=$target"
-            echo "environment=$environment"
             echo "api_tag=$tag"
             echo "api_digest=$digest"
             echo "config_ref=$config_ref"
+            echo "roles=$roles"
             echo "check_only=$check_only"
             echo "reason=$reason"
           } >> "$GITHUB_OUTPUT"
           {
             echo "## Deploy"
-            echo "| Target | Environment | API image tag | Digest | Configuration | Check only | Why |"
+            echo "| Environment | Roles | API image tag | Digest | Configuration | Check only | Why |"
             echo "|---|---|---|---|---|---|---|"
             kept=""
             [ "$tag" = current ] && [ -z "$digest" ] && kept=" (the one the host runs)"
-            echo "| $target | \`$environment\` | \`$tag\`$kept | ${digest:+\`$digest\`} | \`${config_ref:-$GITHUB_SHA}\` | $check_only | $reason |"
+            [ "$roles" = all ] && what_roles="base, docker, app, backup" || what_roles="app"
+            echo "| \`produccion\` | $what_roles | \`$tag\`$kept | ${digest:+\`$digest\`} | \`${config_ref:-$GITHUB_SHA}\` | $check_only | $reason |"
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$ENABLE_API_DEPLOY" != true ]; then
             echo "::notice title=Deploy switched off::The organization variable ENABLE_API_DEPLOY is not 'true'," \
@@ -215,39 +231,74 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-  deploy-ssh:
-    name: Deploy the app role (${{ needs.plan.outputs.target }}, SSH)
+  deploy:
+    # The API's request-deploy.sh reads the conclusion of the job whose name starts with "Deploy the app role";
+    # deploy-lock.sh recognises production deploys by "(produccion, SSH)". Keep both.
+    name: Deploy ${{ needs.plan.outputs.roles == 'all' && 'every role' || 'the app role' }} (produccion, SSH)
     needs: plan
     # Switch: ENABLE_API_DEPLOY (organization variable) must be 'true'.
-    if: needs.plan.outputs.target != 'aws' && vars.ENABLE_API_DEPLOY == 'true'
-    # Port 22 only accepts admin_cidrs (Terraform). On Azure that is anywhere by default, so a GitHub-hosted
-    # runner works. With a narrowed admin_cidrs (always on OCI), set the variable DEPLOY_RUNNER to the label
-    # of a self-hosted runner inside admin_cidrs, or see docs/deploy.md for the alternatives.
+    if: vars.ENABLE_API_DEPLOY == 'true'
+    # Port 22 only accepts admin_cidrs (Terraform), anywhere by default on Azure, so a GitHub-hosted runner
+    # works. With a narrowed admin_cidrs, set the variable DEPLOY_RUNNER to the label of a self-hosted runner
+    # inside admin_cidrs, or see docs/deploy.md for the alternatives.
     runs-on: ${{ vars.DEPLOY_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     # Required reviewers of `produccion` approve here, before any step runs. Branch policy: main only
     # (production comes from main; a dispatched run always runs on main).
     environment:
-      name: ${{ needs.plan.outputs.environment }}
-      url: ${{ needs.plan.outputs.target == 'azure' && 'https://api.tetengo.reqsai.tech' || vars.APP_URL }}
-    # One deploy at a time per environment; a running deploy is never cancelled (a newer pending run
-    # replaces an older pending one, see docs/deploy.md).
-    concurrency:
-      group: deploy-${{ needs.plan.outputs.environment }}
-      cancel-in-progress: false
+      name: produccion
+      url: https://api.tetengo.reqsai.tech
     permissions:
       contents: read
+      actions: read # deploy-lock.sh lists the other deploy jobs
+    outputs:
+      deployed: ${{ steps.deployed.outputs.deployed }}
     env:
-      ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
-      TARGET: ${{ needs.plan.outputs.target }}
-      ENVIRONMENT: ${{ needs.plan.outputs.environment }}
+      # The configuration is checked out under config/ (possibly at config_ref); the scripts of this run's
+      # commit under workflow-scripts/.
+      ANSIBLE_CONFIG: ${{ github.workspace }}/config/ansible/ansible.cfg
       API_TAG: ${{ needs.plan.outputs.api_tag }}
       API_DIGEST: ${{ needs.plan.outputs.api_digest }}
+      ROLES: ${{ needs.plan.outputs.roles }}
       CHECK_ONLY: ${{ needs.plan.outputs.check_only }}
       APP_URL: ${{ vars.APP_URL }}
     steps:
+      # After the approval, never before: see the header. Sparse checkout of this commit's scripts (the
+      # configuration itself is checked out below, possibly at config_ref).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: workflow-scripts
+          sparse-checkout: .github/scripts
+      - name: Wait for any other production deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOCK_JOB: (produccion, SSH)
+          LOCK_STEP: Wait for any other production deploy
+        run: workflow-scripts/.github/scripts/deploy-lock.sh
+
+      - name: Superseded?
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUPERSEDED_REF: ${{ inputs.superseded_ref }}
+        run: |
+          if [ -z "$SUPERSEDED_REF" ]; then
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$SUPERSEDED_REF" --jq .object.sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Superseded, not deployed::$SUPERSEDED_REF moved on to ${head:0:12}; this run is for" \
+              "${GITHUB_SHA:0:12}. The run of the newer commit deploys instead, so this release is not deployed or tagged."
+            echo "- Not deployed: \`$SUPERSEDED_REF\` moved on to \`${head:0:12}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check variables and secrets of the environment
-        id: check
+        if: steps.head.outputs.superseded != 'true'
         env:
           SSH_KNOWN_HOSTS: ${{ vars.SSH_KNOWN_HOSTS }}
           ANSIBLE_INVENTORY: ${{ vars.ANSIBLE_INVENTORY }}
@@ -264,31 +315,27 @@ jobs:
           [ "$HAS_SSH_KEY" = true ] || missing+=("secret DEPLOY_SSH_PRIVATE_KEY")
           if [ ${#missing[@]} -gt 0 ]; then
             # Production must deploy or fail: te-tengo-general-api tags a release only after a successful deploy.
-            if [ "$ENVIRONMENT" = produccion ]; then
-              echo "::error title=Deploy not configured::The produccion environment lacks ${missing[*]}. See docs/deploy.md."
-              exit 1
-            fi
-            echo "::notice title=Deploy skipped::The $ENVIRONMENT environment is not configured yet (missing: ${missing[*]}). See docs/deploy.md."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::error title=Deploy not configured::The produccion environment lacks ${missing[*]}. See docs/deploy.md."
+            exit 1
           fi
-          echo "ready=true" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v7
-        if: steps.check.outputs.ready == 'true'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.head.outputs.superseded != 'true'
         with:
           # rollback.yml deploys the configuration of an earlier tag; otherwise the run's commit.
           ref: ${{ needs.plan.outputs.config_ref }}
+          path: config
           persist-credentials: false
 
       - name: Install Ansible
-        if: steps.check.outputs.ready == 'true'
+        if: steps.head.outputs.superseded != 'true'
+        working-directory: config
         run: |
           pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
           ansible-galaxy collection install -r ansible/requirements.yml
 
       - name: Write the deploy credentials
-        if: steps.check.outputs.ready == 'true'
+        if: steps.head.outputs.superseded != 'true'
         env:
           ANSIBLE_INVENTORY: ${{ vars.ANSIBLE_INVENTORY }}
           SSH_KNOWN_HOSTS: ${{ vars.SSH_KNOWN_HOSTS }}
@@ -307,23 +354,27 @@ jobs:
           printf '%s' "$ANSIBLE_VAULT_PASSWORD" > "$dir/vault-pass"
           printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$dir/id_deploy"
           echo "DEPLOY_DIR=$dir" >> "$GITHUB_ENV"
+          # Replaces ansible.cfg's ssh_args for the playbook and the image check: an unknown or changed host
+          # key stops the deploy (StrictHostKeyChecking=yes) instead of being accepted (accept-new).
+          ssh_args="-o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=30 -o IdentitiesOnly=yes"
+          echo "ANSIBLE_SSH_ARGS=$ssh_args -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$dir/known_hosts" >> "$GITHUB_ENV"
 
-      - name: Run the app role
-        if: steps.check.outputs.ready == 'true'
-        working-directory: ansible
+      - name: Run the playbook (${{ needs.plan.outputs.roles == 'all' && 'every role' || 'app role' }})
+        if: steps.head.outputs.superseded != 'true'
+        working-directory: config/ansible
         run: |
-          # Replaces ansible.cfg's ssh_args: an unknown or changed host key stops the deploy
-          # (StrictHostKeyChecking=yes) instead of being accepted (accept-new).
-          ANSIBLE_SSH_ARGS="-o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=30 -o IdentitiesOnly=yes"
-          export ANSIBLE_SSH_ARGS="$ANSIBLE_SSH_ARGS -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$DEPLOY_DIR/known_hosts"
           args=()
           [ "$CHECK_ONLY" = true ] && args+=(--check --diff)
-          # Production: the committed, non-secret settings (CORS, PWA, HLS origins, ACME e-mail, push, the
+          # roles=app: an API image deploy, the app role only. roles=all: an infra release or rollback, the
+          # whole site.yml (base, docker, app, backup; every role is idempotent, as the release verification
+          # on the containerized host showed).
+          [ "$ROLES" = app ] && args+=(--tags app)
+          # The committed, non-secret production settings (CORS, PWA, HLS origins, ACME e-mail, push, the
           # deploy key), the same file the operator's `make deploy` passes.
-          [ "$TARGET" = azure ] && args+=(--extra-vars @prod.yml)
           # The app role pins the image (repository:tag@digest) and, if it differs from the running one, runs
           # te-tengo-backup.service first (roles/app/tasks/backup-before-image-change.yml).
-          ansible-playbook site.yml --tags app "${args[@]}" \
+          ansible-playbook site.yml "${args[@]}" \
+            --extra-vars @prod.yml \
             --inventory "$DEPLOY_DIR/hosts.yml" \
             --vault-password-file "$DEPLOY_DIR/vault-pass" \
             --extra-vars "@$DEPLOY_DIR/vault.yml" \
@@ -331,14 +382,12 @@ jobs:
             --extra-vars "te_tengo_api_source=registry te_tengo_registry_auth=none te_tengo_api_tag=$API_TAG te_tengo_api_digest=$API_DIGEST"
 
       - name: Check the public health endpoint
-        if: steps.check.outputs.ready == 'true' && env.CHECK_ONLY != 'true'
+        if: steps.head.outputs.superseded != 'true' && env.CHECK_ONLY != 'true'
         run: |
           for attempt in $(seq 1 30); do
             status=$(curl -fsS --max-time 10 "$APP_URL/actuator/health" | jq -r '.status' || true)
             if [ "$status" = "UP" ]; then
-              image="te-tengo-general-api:$API_TAG${API_DIGEST:+@$API_DIGEST}"
-              [ "$API_TAG" = current ] && [ -z "$API_DIGEST" ] && image="the te-tengo-general-api image the host already ran"
-              echo "$APP_URL/actuator/health is UP with $image" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "$APP_URL/actuator/health is UP" | tee -a "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
             echo "Attempt $attempt: status '${status:-none}'"
@@ -347,139 +396,20 @@ jobs:
           echo "::error::$APP_URL/actuator/health did not report UP"
           exit 1
 
-      - name: Remove the deploy credentials
-        if: always()
-        run: rm -rf "$RUNNER_TEMP/deploy"
-
-  deploy-aws:
-    name: Deploy the app role (AWS, SSH over SSM)
-    needs: plan
-    # Switch: ENABLE_API_DEPLOY (organization variable) must be 'true'.
-    if: needs.plan.outputs.target == 'aws' && vars.ENABLE_API_DEPLOY == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    environment:
-      name: mvp
-      url: ${{ vars.APP_URL }}
-    concurrency:
-      group: deploy-mvp
-      cancel-in-progress: false
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
-      SSM_PLUGIN_VERSION: 1.2.835.0
-      SSM_PLUGIN_SHA256: 7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03
-      API_TAG: ${{ needs.plan.outputs.api_tag }}
-      API_DIGEST: ${{ needs.plan.outputs.api_digest }}
-      CHECK_ONLY: ${{ needs.plan.outputs.check_only }}
-      APP_URL: ${{ vars.APP_URL }}
-    steps:
-      - name: Check variables and secrets of the environment
-        id: check
-        env:
-          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          AWS_REGION: ${{ vars.AWS_REGION }}
-          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
-          ANSIBLE_INVENTORY: ${{ vars.ANSIBLE_INVENTORY }}
-          HAS_VAULT: ${{ secrets.ANSIBLE_VAULT_B64 != '' }}
-          HAS_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD != '' }}
-          HAS_SSH_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY != '' }}
+      # The health endpoint cannot tell which image answers. This reads it on the VM: the running API
+      # container must be the configured image and, for an image deploy, the requested digest.
+      - name: Check the running API image
+        if: steps.head.outputs.superseded != 'true' && env.CHECK_ONLY != 'true'
+        working-directory: config/ansible
         run: |
-          missing=()
-          for name in AWS_DEPLOY_ROLE_ARN AWS_REGION EC2_INSTANCE_ID APP_URL ANSIBLE_INVENTORY; do
-            [ -n "${!name}" ] || missing+=("variable $name")
-          done
-          [ "$HAS_VAULT" = true ] || missing+=("secret ANSIBLE_VAULT_B64")
-          [ "$HAS_VAULT_PASSWORD" = true ] || missing+=("secret ANSIBLE_VAULT_PASSWORD")
-          [ "$HAS_SSH_KEY" = true ] || missing+=("secret DEPLOY_SSH_PRIVATE_KEY")
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::notice title=Deploy skipped::The mvp environment is not configured yet (missing: ${missing[*]}). See docs/deploy.md."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "ready=true" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@v7
-        if: steps.check.outputs.ready == 'true'
-        with:
-          # rollback.yml deploys the configuration of an earlier tag; otherwise the run's commit.
-          ref: ${{ needs.plan.outputs.config_ref }}
-          persist-credentials: false
-
-      - name: Configure AWS credentials (OIDC)
-        if: steps.check.outputs.ready == 'true'
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          # The deploy role may only terminate sessions with this prefix (Terraform, github-deploy.tf).
-          role-session-name: te-tengo-mvp-deploy-${{ github.run_id }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Install the Session Manager plugin
-        if: steps.check.outputs.ready == 'true'
-        run: |
-          deb="$RUNNER_TEMP/session-manager-plugin.deb"
-          curl -fsSL -o "$deb" \
-            "https://s3.amazonaws.com/session-manager-downloads/plugin/$SSM_PLUGIN_VERSION/ubuntu_64bit/session-manager-plugin.deb"
-          echo "$SSM_PLUGIN_SHA256  $deb" | sha256sum --check --strict
-          sudo dpkg -i "$deb"
-          session-manager-plugin --version
-
-      - name: Install Ansible
-        if: steps.check.outputs.ready == 'true'
-        run: |
-          pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
-          ansible-galaxy collection install -r ansible/requirements.yml
-
-      - name: Write the deploy credentials
-        if: steps.check.outputs.ready == 'true'
-        env:
-          ANSIBLE_INVENTORY: ${{ vars.ANSIBLE_INVENTORY }}
-          ANSIBLE_VAULT_B64: ${{ secrets.ANSIBLE_VAULT_B64 }}
-          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
-          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
-        run: |
-          umask 077
-          dir="$RUNNER_TEMP/deploy"
-          mkdir -p "$dir"
-          # Inventory: `terraform -chdir=envs/mvp output -raw ansible_inventory` (no secrets in it).
-          printf '%s\n' "$ANSIBLE_INVENTORY" > "$dir/hosts.yml"
-          printf '%s' "$ANSIBLE_VAULT_B64" | base64 --decode > "$dir/vault.yml"
-          printf '%s' "$ANSIBLE_VAULT_PASSWORD" > "$dir/vault-pass"
-          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$dir/id_deploy"
-          echo "DEPLOY_DIR=$dir" >> "$GITHUB_ENV"
-
-      - name: Run the app role
-        if: steps.check.outputs.ready == 'true'
-        working-directory: ansible
-        run: |
-          args=()
-          [ "$CHECK_ONLY" = true ] && args+=(--check --diff)
-          ansible-playbook site.yml --tags app "${args[@]}" \
+          ../../workflow-scripts/.github/scripts/check-deployed-image.sh "$API_DIGEST" \
             --inventory "$DEPLOY_DIR/hosts.yml" \
-            --vault-password-file "$DEPLOY_DIR/vault-pass" \
-            --extra-vars "@$DEPLOY_DIR/vault.yml" \
-            --extra-vars "ansible_ssh_private_key_file=$DEPLOY_DIR/id_deploy" \
-            --extra-vars "te_tengo_api_source=registry te_tengo_api_tag=$API_TAG te_tengo_api_digest=$API_DIGEST"
+            --extra-vars "ansible_ssh_private_key_file=$DEPLOY_DIR/id_deploy"
 
-      - name: Check the public health endpoint
-        if: steps.check.outputs.ready == 'true' && env.CHECK_ONLY != 'true'
-        run: |
-          for attempt in $(seq 1 30); do
-            status=$(curl -fsS --max-time 10 "$APP_URL/actuator/health" | jq -r '.status' || true)
-            if [ "$status" = "UP" ]; then
-              image="te-tengo-general-api:$API_TAG${API_DIGEST:+@$API_DIGEST}"
-              [ "$API_TAG" = current ] && [ -z "$API_DIGEST" ] && image="the te-tengo-general-api image the host already ran"
-              echo "$APP_URL/actuator/health is UP with $image" | tee -a "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-            echo "Attempt $attempt: status '${status:-none}'"
-            sleep 10
-          done
-          echo "::error::$APP_URL/actuator/health did not report UP"
-          exit 1
+      - name: Deployed
+        id: deployed
+        if: steps.head.outputs.superseded != 'true' && env.CHECK_ONLY != 'true'
+        run: echo "deployed=true" >> "$GITHUB_OUTPUT"
 
       - name: Remove the deploy credentials
         if: always()

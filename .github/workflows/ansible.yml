@@ -1,29 +1,21 @@
 name: Ansible
 
+# The Ansible part of CI (ci.yml calls it; docs/deploy.md): yamllint, ansible-lint, the playbook syntax check,
+# docker compose config, and a deploy of the whole site.yml to a containerized Ubuntu 24.04 host with the
+# smoke test and the running-image check. The test host runs the API built from te-tengo-general-api's
+# develop (a public repository, checked out with the workflow token). release.yml skips the deploy test
+# (deploy-test: false): its verification job deploys the release commit with the API image in production.
 on:
-  pull_request:
-    paths:
-      - ansible/**
-      - compose/**
-      - test/**
-      - ansible.mk
-      - Makefile
-      - .yamllint
-      # make yamllint also lints every workflow file.
-      - .github/workflows/**
-  push:
-    # release/* and hotfix/* too: the release pull request to main is opened by release.yml with GITHUB_TOKEN,
-    # which starts no pull_request run, so its checks come from these pushes (same commit).
-    branches: [develop, main, "release/**", "hotfix/**"]
-    paths:
-      - ansible/**
-      - compose/**
-      - test/**
-      - ansible.mk
-      - Makefile
-      - .yamllint
-      # make yamllint also lints every workflow file.
-      - .github/workflows/**
+  workflow_call:
+    inputs:
+      deploy-test:
+        description: Deploy site.yml to the containerized host and smoke-test it
+        type: boolean
+        default: true
+      api_ref:
+        description: te-tengo-general-api branch, tag or commit the test image is built from
+        type: string
+        default: develop
   workflow_dispatch:
     inputs:
       api_ref:
@@ -31,12 +23,7 @@ on:
         type: string
         default: develop
 
-concurrency:
-  group: ansible-${{ github.ref }}
-  cancel-in-progress: true
-
-permissions:
-  contents: read
+permissions: {}
 
 defaults:
   run:
@@ -53,8 +40,10 @@ jobs:
     name: Lint and validate
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -82,53 +71,47 @@ jobs:
   deploy-test:
     name: Deploy to a containerized host
     needs: lint
+    # null outside workflow_call: only an explicit false skips it.
+    if: format('{0}', inputs.deploy-test) != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: read
     env:
-      API_REPO_TOKEN: ${{ secrets.API_REPO_TOKEN }}
       TT_API_SRC: ${{ github.workspace }}/te-tengo-general-api
     steps:
-      - name: Skip without access to te-tengo-general-api
-        if: env.API_REPO_TOKEN == ''
-        run: |
-          echo "::notice title=Deploy test skipped::Add the API_REPO_TOKEN secret (fine-grained token with" \
-            "read-only Contents on Te-Tengo-Tech/te-tengo-general-api) to build the API image and run make test-all."
-
-      - uses: actions/checkout@v7
-        if: env.API_REPO_TOKEN != ''
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # te-tengo-general-api is public: the workflow token reads it, no extra secret.
       - name: Check out te-tengo-general-api
-        if: env.API_REPO_TOKEN != ''
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Te-Tengo-Tech/te-tengo-general-api
           ref: ${{ inputs.api_ref || 'develop' }}
-          token: ${{ secrets.API_REPO_TOKEN }}
           path: te-tengo-general-api
           persist-credentials: false
 
       - name: Install Ansible
-        if: env.API_REPO_TOKEN != ''
         run: |
           pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
           make galaxy
 
       - name: Start the test host and Floci
-        if: env.API_REPO_TOKEN != ''
         run: make test-host-up
 
       - name: Deploy with site.yml
-        if: env.API_REPO_TOKEN != ''
         run: make test-deploy
 
       - name: Smoke test
-        if: env.API_REPO_TOKEN != ''
         run: make test-smoke | tee smoke.txt
 
+      - name: The api container runs the configured image
+        run: make test-running-image
+
       - name: Summary
-        if: always() && env.API_REPO_TOKEN != ''
+        if: always()
         run: |
           {
             echo "### Containerized deploy test"
@@ -138,9 +121,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Logs of the stack on failure
-        if: failure() && env.API_REPO_TOKEN != ''
+        if: failure()
         run: docker exec -w /opt/te-tengo tt-test-host docker compose logs --tail 200 || true
 
       - name: Tear down
-        if: always() && env.API_REPO_TOKEN != ''
+        if: always()
         run: make test-down
