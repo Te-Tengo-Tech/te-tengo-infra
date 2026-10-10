@@ -16,12 +16,9 @@ on:
         description: te-tengo-general-api branch, tag or commit the test image is built from
         type: string
         default: develop
+  # A manual run always tests against te-tengo-general-api's develop: a free-form ref here would let a run
+  # build and execute any branch's code in the default branch's context (CodeQL cache poisoning).
   workflow_dispatch:
-    inputs:
-      api_ref:
-        description: te-tengo-general-api branch, tag or commit the test image is built from
-        type: string
-        default: develop
 
 permissions: {}
 
