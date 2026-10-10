@@ -4,6 +4,24 @@ Format based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/); 
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-10
+
+Hotfix for memory pressure on the 1 GiB Azure VM. The production audit of 2026-10-10 found 836 MiB of usable RAM, about 560 MB in swap with constant swap-in, the kernel reporting memory pressure, a 74 s stall of API threads, zswap off, unused host services running, and Caddy at its 64 MB cap. The product owner chose free tuning over a VM resize.
+
+### Fixed
+
+- **zswap on the host** (base role, `base_manage_zswap`, default `true`). zswap is a compressed cache in RAM in front of the swap file ([kernel docs](https://docs.kernel.org/admin-guide/mm/zswap.html)), so most swap-ins become decompressions instead of Standard SSD reads.
+  - Ubuntu 24.04's linux-azure kernels (6.8 and 7.0) build it in but leave it off.
+  - The new oneshot unit `te-tengo-zswap.service` writes the sysfs parameters at every boot: `zpool=zsmalloc` where the parameter exists, the first compressor the kernel accepts out of `zstd`, `lz4` and `lzo`, `max_pool_percent=20`, the shrinker on, then `enabled=Y`. Ansible enables and starts it, so zswap is on at once, with no reboot and no kernel command-line change.
+  - Skipped when the kernel has no `/sys/module/zswap/parameters` and on the local test host, which shares the kernel of Docker's VM or of the CI runner (`test/vars.yml`).
+- **Unused host services disabled and masked on Azure and OCI** (base role, `base_disable_unused_services`): `multipathd.socket`, `multipathd.service`, `fwupd-refresh.timer`, `fwupd.service`, `ModemManager.service` and `udisks2.service`, only where the image has them. A missing unit is skipped. The VM has one OS disk and no data disks, so it uses no multipath device.
+- **Caddy memory limit in the `tiny` profile raised from 64 MB to 96 MB.** Its cgroup peak had reached the 64 MB cap on the VM. The `tiny` container caps now add up to 880 MiB, within the 900 MiB budget that `make test-memory` enforces. The other profiles are unchanged.
+
+### Changed
+
+- **Desktop agent 0.4.1 published.** `ansible/prod.yml` sets `TT_AGENTE_VERSION_PUBLICADA: "0.4.1"` in `te_tengo_api_settings`, so `GET /api/agente/configuracion` publishes 0.4.1 instead of the API's default (0.2.0).
+- **Rollout.** The production redeploy after the merge runs only the `app` role: it applies the Caddy limit and the agent version. An operator applies the base-role changes (zswap, masked services) once with `make deploy ANSIBLE_ARGS="--tags base"`. The checks to run on the VM afterwards are in `docs/deploy.md` (section 5).
+
 ## [0.2.0] - 2026-10-09
 
 ### Added

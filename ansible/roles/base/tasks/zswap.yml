@@ -1,0 +1,31 @@
+---
+# zswap on the host (base_manage_zswap, and only where the kernel has it). Docs:
+# https://docs.kernel.org/admin-guide/mm/zswap.html. The parameters live in sysfs and are lost at
+# reboot. A oneshot unit writes them at every boot, and starting it now applies them at once. That is
+# why the kernel command line (zswap.enabled=1 in /etc/default/grub.d plus update-grub) is not used: it
+# would only take effect after a reboot. Idempotent: the unit is restarted only when its script or unit
+# file changes, and otherwise stays active (RemainAfterExit).
+- name: Install the zswap script
+  ansible.builtin.template:
+    src: te-tengo-zswap.j2
+    dest: /usr/local/sbin/te-tengo-zswap
+    owner: root
+    group: root
+    mode: "0755"
+  register: base_zswap_script
+
+- name: Install the zswap unit
+  ansible.builtin.template:
+    src: te-tengo-zswap.service.j2
+    dest: /etc/systemd/system/te-tengo-zswap.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: base_zswap_unit
+
+- name: Enable zswap now and at every boot
+  ansible.builtin.systemd_service:
+    name: te-tengo-zswap.service
+    enabled: true
+    daemon_reload: "{{ base_zswap_unit is changed }}"
+    state: "{{ 'restarted' if (base_zswap_script is changed or base_zswap_unit is changed) else 'started' }}"
