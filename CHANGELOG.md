@@ -4,6 +4,8 @@ Format based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/); 
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-10
+
 ### Security
 - A manual run of `ansible.yml` no longer takes an `api_ref`: it always builds te-tengo-general-api's `develop`, so a dispatch cannot run an arbitrary branch's code in the default branch's context (CodeQL `actions/cache-poisoning/poisonable-step`, 6 alerts).
 
