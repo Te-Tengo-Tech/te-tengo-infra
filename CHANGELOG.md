@@ -4,6 +4,11 @@ Format based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/); 
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-11
+
+### Added
+- `TT_VERSIONES_URL_BASE` in `te_tengo_api_settings` (`ansible/prod.yml`): the API reads the published app versions (US-43, `GET /api/versiones`) from the manifests the desktop and mobile release workflows write to the downloads bucket, so a release no longer needs a change of `TT_AGENTE_VERSION_PUBLICADA` here (it stays as the fallback).
+
 ## [0.2.3] - 2026-10-10
 
 ### Security
