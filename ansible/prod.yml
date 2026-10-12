@@ -39,8 +39,13 @@ te_tengo_api_settings:
   TT_CORS_ORIGENES: https://app.tetengo.reqsai.tech,https://tetengo.reqsai.tech,https://te-tengo.pages.dev
   TT_PWA_URL: https://app.tetengo.reqsai.tech/
   TT_ENLACE_BASE: "https://app.tetengo.reqsai.tech/#"
-  # Desktop agent release that GET /api/agente/configuracion publishes (the API's default is 0.2.0). Agents
-  # only log a difference. Raise it when a new desktop agent release reaches production.
+  # US-43: GET /api/versiones reads the version of each app from the manifests the release workflows of
+  # the desktop and mobile repositories write to the public downloads bucket (versiones/<canal>.json, the
+  # repositories' DESCARGAS_BASE_URL; ADR 0012 of te-tengo-general-api). Set once: releases need no change
+  # here.
+  TT_VERSIONES_URL_BASE: https://pub-c2d32ffba732437f83ff41fe77c0b9f1.r2.dev
+  # Fallback only, while no manifest publishes Te Tengo Captura: GET /api/agente/configuracion and
+  # GET /api/versiones use it (version alone, no download). Nothing needs to raise it any more.
   TT_AGENTE_VERSION_PUBLICADA: "0.4.1"
 
 # Public half of the GitHub Actions deploy key (private half: secret DEPLOY_SSH_PRIVATE_KEY of the
