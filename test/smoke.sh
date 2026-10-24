@@ -207,6 +207,12 @@ check "DELETE /api/vista-en-vivo/{id} closes the session (204)" \
   [ "$(code "$(call DELETE "/api/vista-en-vivo/$session_id" '' "$token")")" = 204 ]
 check "WHEP with the token of the closed session is rejected (401)" [ "$(whep "$whep_url")" = 401 ]
 docker rm -f "$PUBLISHER" >/dev/null 2>&1
+# The hook's shared secret never reaches a log line (it was logged in full as ?secreto= until 2026-10-24).
+hook_secret=$(docker exec "$HOST" sh -c ". $APP_DIR/.env && printf %s \"\$MEDIAMTX_AUTH_SECRET\"")
+# shellcheck disable=SC2016
+check "No MediaMTX or API log line contains the hook secret" \
+  bash -c '[ -n "$1" ] && ! docker exec -w "$2" "$3" docker compose logs mediamtx api 2>&1 | grep -qF -e "$1" -e "secreto="' \
+  _ "$hook_secret" "$APP_DIR" "$HOST"
 
 rtsps_subject=$(openssl s_client -connect "$RTSPS" -servername localhost -CAfile "$CA" -verify_return_error </dev/null 2>/dev/null \
   | openssl x509 -noout -ext subjectAltName 2>/dev/null | tr -d ' \n')

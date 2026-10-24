@@ -5,6 +5,7 @@ Format based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/); 
 ## [Unreleased]
 
 ### Fixed
+- MediaMTX's authorization hook carried the shared secret in a `?secreto=` query parameter, and MediaMTX logs the whole hook URL when a call fails (`HTTP request failed: Post "http://api:8080/api/interno/mediamtx/autorizar?secreto=…": context deadline exceeded`, production, 2026-10-24). `MTX_AUTHHTTPADDRESS` now carries it as the password of the URL's user info (`http://mediamtx:<secret>@api:8080/…`), which Go's HTTP client sends as an `Authorization: Basic` header and writes as `***` in errors. It needs te-tengo-general-api with Basic support deployed first, and the leaked value must be rotated afterwards (docs/deploy.md, «Rotate the MediaMTX hook secret»). The smoke test checks that no MediaMTX or API log line contains the secret, and `mediamtx.yml` documents that `readTimeout` (10 s) is also the hook's timeout and why it stays.
 - The weekly branch cleanup listed each branch's pull requests with `gh api -f`, which sends a POST to the create-pull-request endpoint, so every lookup failed with 422 and the open-PR and `do-not-delete` protections were never checked. It now lists with `--method GET`, and a branch whose PRs cannot be read is left alone.
 
 ## [0.3.0] - 2026-10-11

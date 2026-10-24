@@ -2,21 +2,30 @@
 # RTSPS to camaras/<camaraId>; the app reads WebRTC (WHEP signalling through Caddy at /vivo-webrtc/...,
 # media on the ICE port) and falls back to LL-HLS through Caddy (/vivo/...).
 # compose.yaml fills the host-specific values through MTX_* environment variables, which override
-# this file: authHTTPAddress (with the shared secret), rtspServerCert and rtspServerKey (Caddy's
+# this file: authHTTPAddress (with the shared secret as its user info's password), rtspServerCert and rtspServerKey (Caddy's
 # certificate), the browser origins, the ICE port and the public addresses ICE announces. The
 # placeholders below are never used as they are.
 
 logLevel: info
 logDestinations: [stdout]
 
+# readTimeout is also the timeout of every call to the authorization hook (MediaMTX 1.21 has no setting
+# of its own for it: internal/auth/manager.go builds the hook's HTTP client with readTimeout). MediaMTX
+# asks the hook one request at a time, inside its path manager (internal/core/path_manager.go), so while
+# one call waits every other publish and read waits too. It stays 10 s: a shorter value would also cut
+# RTSPS publishers off on slow home uplinks, and the hook answers in milliseconds unless the API itself
+# stalls (2026-10-24: the host was swapping the API's memory; the API now logs answers slower than 1 s).
 readTimeout: 10s
 writeTimeout: 10s
 
 ###############################################
 # Authorization: every publish and read is asked to the API, which knows the publish tokens it
-# issued to agents and the viewer tokens of active live view sessions.
+# issued to agents and the viewer tokens of active live view sessions. The shared secret is the password
+# of the URL's user info (sent as HTTP Basic credentials, written as *** when MediaMTX logs a failed
+# call); the API also answers only requests from the Docker network, and Caddy never routes
+# /api/interno/.
 authMethod: http
-authHTTPAddress: http://api:8080/api/interno/mediamtx/autorizar?secreto=OVERRIDDEN_BY_MTX_AUTHHTTPADDRESS
+authHTTPAddress: http://mediamtx:OVERRIDDEN_BY_MTX_AUTHHTTPADDRESS@api:8080/api/interno/mediamtx/autorizar
 # The control API is not asked to the hook: the API itself calls it (to kick a publisher or reader on
 # pause or consent revocation) and it is reachable only inside the Docker network (never published).
 authHTTPExclude:

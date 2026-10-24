@@ -92,7 +92,11 @@ services:
         condition: service_healthy
     environment:
       # MTX_* variables override mediamtx.yml (MediaMTX reads them at startup).
-      MTX_AUTHHTTPADDRESS: http://api:8080/api/interno/mediamtx/autorizar?secreto=${MEDIAMTX_AUTH_SECRET:?MEDIAMTX_AUTH_SECRET is required}
+      # The hook's shared secret is the password of the URL's user info, never a query parameter:
+      # MediaMTX logs the whole URL when a hook call fails, and Go's HTTP client (which sends the user
+      # info as an `Authorization: Basic` header) writes that password as *** in its errors. Needs
+      # te-tengo-general-api with Basic support (the release after 0.5.0); docs/deploy.md.
+      MTX_AUTHHTTPADDRESS: http://mediamtx:${MEDIAMTX_AUTH_SECRET:?MEDIAMTX_AUTH_SECRET is required}@api:8080/api/interno/mediamtx/autorizar
       # Origins of browser clients (the PWA) allowed to read HLS, comma-separated; `*` for any.
       MTX_HLSALLOWORIGINS: ${HLS_ALLOW_ORIGINS:?HLS_ALLOW_ORIGINS is required}
       # WebRTC (WHEP) for the app: browser origins, the ICE port (the same number outside and inside the
