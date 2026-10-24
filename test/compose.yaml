@@ -36,7 +36,7 @@ services:
       - test
 
   floci:
-    image: floci/floci:2.2.0
+    image: floci/floci:2.3.0
     container_name: tt-test-floci
     environment:
       # Verify request signatures (pre-signed URLs included), as Amazon S3 does.
