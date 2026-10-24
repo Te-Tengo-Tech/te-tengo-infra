@@ -29,6 +29,10 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "build(deps)"
+    ignore:
+      # azurerm 5 has breaking changes: the module and the env move to it in a planned migration, not a bump.
+      - dependency-name: "hashicorp/azurerm"
+        update-types: ["version-update:semver-major"]
     groups:
       minor-and-patch:
         update-types:
@@ -56,3 +60,8 @@ updates:
     target-branch: "develop"
     commit-message:
       prefix: "build(deps)"
+    ignore:
+      # The test host mirrors the production VM (Ubuntu 24.04 LTS): no interim releases, and a new LTS is
+      # adopted together with production, not by a bump here.
+      - dependency-name: "ubuntu"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
