@@ -9,7 +9,7 @@ SHELL := /bin/bash
 # ----------------------------------------------------------------------------
 
 TF              ?= terraform
-TF_DIRS         := bootstrap modules/te-tengo modules/te-tengo-oci modules/te-tengo-azure envs/azure envs/oci envs/mvp envs/local
+TF_DIRS         := bootstrap bootstrap-azure modules/te-tengo modules/te-tengo-oci modules/te-tengo-azure envs/azure envs/oci envs/mvp envs/local
 TF_TEST_DIRS    := modules/te-tengo-azure modules/te-tengo-oci
 AZURE_DIR       := envs/azure
 OCI_DIR         := envs/oci

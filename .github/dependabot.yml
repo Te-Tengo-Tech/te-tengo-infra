@@ -21,6 +21,7 @@ updates:
   - package-ecosystem: "terraform"
     directories:
       - "/bootstrap"
+      - "/bootstrap-azure"
       - "/envs/*"
       - "/modules/*"
     schedule:

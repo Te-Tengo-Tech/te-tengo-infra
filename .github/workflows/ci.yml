@@ -63,7 +63,7 @@ jobs:
           ansible=false terraform=false
           # The workflows are linted by the Ansible part (make yamllint covers .github/workflows).
           grep -qE '^(ansible/|compose/|test/|ansible\.mk$|Makefile$|\.yamllint$|\.github/)' <<< "$files" && ansible=true
-          grep -qE '^(bootstrap/|envs/|modules/|\.tflint\.hcl$|\.checkov\.yaml$|Makefile$|\.github/workflows/(terraform|ci)\.yml$)' <<< "$files" && terraform=true
+          grep -qE '^(bootstrap[^/]*/|envs/|modules/|\.tflint\.hcl$|\.checkov\.yaml$|Makefile$|\.github/workflows/(terraform|ci)\.yml$)' <<< "$files" && terraform=true
           echo "ansible=$ansible" >> "$GITHUB_OUTPUT"
           echo "terraform=$terraform" >> "$GITHUB_OUTPUT"
           echo "Ansible part: $ansible; Terraform part: $terraform" | tee -a "$GITHUB_STEP_SUMMARY"
