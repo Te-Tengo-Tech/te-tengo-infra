@@ -1,7 +1,7 @@
 ---
 # Flyway migrations are forward-only: before the running stack switches to another API image, dump the
 # database with the backup role's service (te-tengo-backup.service: a local dump in /var/backups/te-tengo,
-# copied to the backups bucket on R2), so a bad release can be undone with te-tengo-restore. Skipped on the
+# copied to the backups container on Azure Blob Storage), so a bad release can be undone with te-tengo-restore. Skipped on the
 # first deploy (no stack yet) and when the image does not change (a configuration-only deploy). A failed
 # backup stops the deploy before anything changes.
 - name: Pull the target API image to compare it with the running one

@@ -1,0 +1,60 @@
+# --- Azure Blob Storage through azcopy (included by te-tengo-backup and te-tengo-restore) -------------
+# Container: {{ backup_azure_container_url }}
+# Authentication, from /etc/te-tengo/backup.env:
+# - production: AZCOPY_AUTO_LOGIN_TYPE=MSI, the VM's system-assigned managed identity (role Storage Blob
+#   Data Contributor on the container); no secret on the host.
+# - Azurite test host: AZURE_STORAGE_ACCOUNT / AZURE_STORAGE_ACCOUNT_KEY, from which a one-hour account SAS
+#   (blob service, read/write/list/add/create, no delete) is signed below.
+container_url="{{ backup_azure_container_url }}"
+
+urlencode() {
+  local s="$1" out="" c
+  while [[ -n "$s" ]]; do
+    c="${s:0:1}"
+    s="${s:1}"
+    case "$c" in
+      [A-Za-z0-9.~_-]) out+="$c" ;;
+      *) out+="$(printf '%%%02X' "'$c")" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+account_sas() {
+  local version=2021-12-02 permissions=rwlac expiry hexkey signature
+  expiry="$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)"
+  hexkey="$(printf '%s' "${AZURE_STORAGE_ACCOUNT_KEY}" | base64 -d | od -An -v -tx1 | tr -d ' \n')"
+  # String-to-sign of an account SAS (version 2020-12-06 and later): one field per line, the last one
+  # (encryption scope) empty, every line ending in a newline.
+  signature="$(printf '%s\n' "${AZURE_STORAGE_ACCOUNT}" "${permissions}" b sco "" "${expiry}" "" https,http "${version}" "" \
+    | openssl dgst -sha256 -mac HMAC -macopt "hexkey:${hexkey}" -binary | base64 -w0)"
+  printf 'sv=%s&ss=b&srt=sco&sp=%s&se=%s&spr=https,http&sig=%s' \
+    "${version}" "${permissions}" "$(urlencode "${expiry}")" "$(urlencode "${signature}")"
+}
+
+# blob_url [path inside the container] -> URL azcopy accepts (with a SAS on the Azurite test host).
+blob_url() {
+  local url="${container_url}${1:+/$1}"
+  if [[ -n "${AZURE_STORAGE_ACCOUNT_KEY:-}" ]]; then
+    url+="?$(account_sas)"
+  fi
+  printf '%s' "${url}"
+}
+
+blob_upload() { # local file, path inside the container
+  azcopy copy "$1" "$(blob_url "$2")" --from-to LocalBlob --overwrite=false \
+    --log-level ERROR --output-level quiet
+}
+
+blob_download() { # path inside the container, local file
+  azcopy copy "$(blob_url "$1")" "$2" --from-to BlobLocal --overwrite=true \
+    --log-level ERROR --output-level quiet
+}
+
+# Paths of the dumps in the container, oldest first (the names carry a UTC timestamp).
+blob_list_dumps() {
+  azcopy list "$(blob_url)" --location Blob --log-level ERROR \
+    | sed -n 's|^\({{ backup_prefix }}/te-tengo-[0-9TZ]*\.dump\);.*|\1|p' | sort
+}
+# ----------------------------------------------------------------------------------------------------
+

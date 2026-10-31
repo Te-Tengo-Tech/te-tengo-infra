@@ -8,10 +8,11 @@ terraform {
     }
   }
 
-  # Partial configuration: the state goes to a private Cloudflare R2 bucket through the S3 backend
+  # Partial configuration: the state goes to a private container of the state storage account created
+  # once by bootstrap-azure/, authenticated with Microsoft Entra ID (`az login`, no account keys)
   #   terraform init -backend-config=backend.hcl        (copy backend.hcl.example)
   # For local state instead, create backend_override.tf (git-ignored) with
   #   terraform { backend "local" {} }
-  # See docs/terraform.md ("Runbook: first apply on Azure").
-  backend "s3" {}
+  # See docs/terraform.md ("Runbook: first apply on Azure" and "Migrate from Cloudflare R2 to Azure Blob").
+  backend "azurerm" {}
 }

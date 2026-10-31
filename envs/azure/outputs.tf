@@ -78,6 +78,41 @@ output "budget_id" {
   value       = module.te_tengo.budget_id
 }
 
+output "storage_account_name" {
+  description = "Name of the storage account (API TT_AZURE_STORAGE_CUENTA)."
+  value       = module.te_tengo.storage_account_name
+}
+
+output "storage_account_id" {
+  description = "Azure resource id of the storage account."
+  value       = module.te_tengo.storage_account_id
+}
+
+output "storage_blob_endpoint" {
+  description = "Blob service endpoint (API TT_AZURE_STORAGE_ENDPOINT; host of the SAS URLs)."
+  value       = module.te_tengo.storage_blob_endpoint
+}
+
+output "clips_container_name" {
+  description = "Container of the clips, landmarks and profile photos."
+  value       = module.te_tengo.clips_container_name
+}
+
+output "movements_container_name" {
+  description = "Container of the movement files."
+  value       = module.te_tengo.movements_container_name
+}
+
+output "backups_container_name" {
+  description = "Container of the database dumps."
+  value       = module.te_tengo.backups_container_name
+}
+
+output "vm_principal_id" {
+  description = "Object id of the VM's system-assigned managed identity."
+  value       = module.te_tengo.vm_principal_id
+}
+
 output "ansible_inventory" {
   description = "Ansible inventory of the host; write it with `make inventory` (envs/azure is the default)."
   value       = module.te_tengo.ansible_inventory

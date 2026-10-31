@@ -1,4 +1,30 @@
 ---
+- name: Validate the backup storage settings
+  ansible.builtin.assert:
+    that:
+      - backup_storage_provider in ['azure', 's3']
+      - backup_storage_provider != 'azure' or backup_object_storage_auth in ['managed_identity', 'static']
+      - backup_storage_provider != 's3' or backup_object_storage_auth in ['static', 'instance_role']
+      - backup_target != 'azure' or backup_azure_endpoint is match('^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[a-z0-9]{3,24})?$')
+      - backup_target != 'azure' or backup_object_storage_auth != 'managed_identity' or backup_azure_endpoint is match('^https://')
+      - backup_target != 'azure' or backup_azure_container is match('^[a-z0-9](?!.*--)[a-z0-9-]{1,61}[a-z0-9]$')
+    fail_msg: >-
+      Invalid backup storage settings: object_storage_provider (azure or s3), object_storage_auth
+      (azure: managed_identity or static; s3: static or instance_role), azure_storage_endpoint (https, or
+      http for Azurite with static) and backups_container.
+    quiet: true
+
+- name: Validate the Azure storage account key of the backup job
+  ansible.builtin.assert:
+    that:
+      - backup_azure_account | length > 0
+      - backup_azure_account_key | length > 0
+    fail_msg: >-
+      object_storage_auth is static (Azurite test host) but azure_storage_account or
+      vault_azure_storage_account_key is empty. Production uses managed_identity and needs no key.
+    quiet: true
+  when: backup_target == 'azure' and backup_object_storage_auth == 'static'
+
 - name: Validate the backup storage keys
   ansible.builtin.assert:
     that:
@@ -8,7 +34,7 @@
       object_storage_auth is static (Cloudflare R2) but vault_backup_s3_access_key_id or
       vault_backup_s3_secret_access_key is empty (an R2 API token with Object Read & Write on the backups bucket).
     quiet: true
-  when: backup_bucket | length > 0 and backup_object_storage_auth == 'static'
+  when: backup_target == 's3' and backup_object_storage_auth == 'static'
 
 - name: Create the backup directories
   ansible.builtin.file:
@@ -21,8 +47,36 @@
     - "{{ backup_dir }}"
     - /etc/te-tengo
 
-- name: Install the AWS CLI for off-host copies
-  when: backup_bucket | length > 0
+- name: Install azcopy for off-host copies (Azure Blob Storage)
+  when: backup_target == 'azure'
+  block:
+    - name: Add Microsoft's signed apt repository (packages.microsoft.com)
+      ansible.builtin.deb822_repository:
+        name: microsoft-prod
+        types: deb
+        uris: "{{ backup_microsoft_repo_uri }}"
+        suites: "{{ ansible_facts['distribution_release'] }}"
+        components: main
+        architectures: "{{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}"
+        signed_by: https://packages.microsoft.com/keys/microsoft.asc
+        state: present
+
+    - name: Install azcopy
+      ansible.builtin.apt:
+        name: azcopy
+        state: present
+        update_cache: true
+
+    - name: Create the azcopy working directory (logs and job plans)
+      ansible.builtin.file:
+        path: "{{ backup_azcopy_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+- name: Install the AWS CLI for off-host copies (S3-compatible store)
+  when: backup_target == 's3'
   block:
     - name: Check for the AWS CLI
       ansible.builtin.stat:
@@ -57,17 +111,17 @@
         - /tmp/awscliv2.zip
         - /tmp/aws
 
-- name: Write the AWS CLI configuration of the backup job
-  ansible.builtin.copy:
-    dest: /etc/te-tengo/aws-config
-    content: |
-      # Managed by Ansible (role backup). Used by te-tengo-backup and te-tengo-restore (AWS_CONFIG_FILE).
-      [default]
-      s3 =
-        addressing_style = {{ 'path' if backup_s3_path_style | bool else 'auto' }}
-    owner: root
-    group: root
-    mode: "0600"
+    - name: Write the AWS CLI configuration of the backup job
+      ansible.builtin.copy:
+        dest: /etc/te-tengo/aws-config
+        content: |
+          # Managed by Ansible (role backup). Used by te-tengo-backup and te-tengo-restore (AWS_CONFIG_FILE).
+          [default]
+          s3 =
+            addressing_style = {{ 'path' if backup_s3_path_style | bool else 'auto' }}
+        owner: root
+        group: root
+        mode: "0600"
 
 - name: Write the backup environment
   ansible.builtin.copy:
@@ -81,16 +135,33 @@
     group: root
     mode: "0600"
   vars:
-    backup_static_env:
+    backup_azure_env:
+      AZCOPY_LOG_LOCATION: "{{ backup_azcopy_dir }}"
+      AZCOPY_JOB_PLAN_LOCATION: "{{ backup_azcopy_dir }}"
+      AZCOPY_BUFFER_GB: "{{ backup_azcopy_buffer_gb }}"
+      AZCOPY_CONCURRENCY_VALUE: "{{ backup_azcopy_concurrency }}"
+    # The VM's system-assigned managed identity, through IMDS, for every azcopy command.
+    backup_azure_msi_env:
+      AZCOPY_AUTO_LOGIN_TYPE: MSI
+    # Azurite only: the scripts sign a short account SAS with the key.
+    backup_azure_static_env:
+      AZURE_STORAGE_ACCOUNT: "{{ backup_azure_account }}"
+      AZURE_STORAGE_ACCOUNT_KEY: "{{ backup_azure_account_key }}"
+    backup_s3_static_env:
       AWS_ACCESS_KEY_ID: "{{ backup_access_key_id }}"
       AWS_SECRET_ACCESS_KEY: "{{ backup_secret_access_key }}"
       # Recent AWS CLI versions add flexible checksums to every upload; S3-compatible stores such as R2
       # do not implement all of them, so send them only when the operation requires one.
       AWS_REQUEST_CHECKSUM_CALCULATION: when_required
       AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
-    backup_env: >-
+    backup_azure_full_env: >-
+      {{ backup_azure_env
+         | combine(backup_azure_msi_env if backup_object_storage_auth == 'managed_identity' else backup_azure_static_env) }}
+    backup_s3_full_env: >-
       {{ {'AWS_DEFAULT_REGION': backup_aws_region, 'AWS_CONFIG_FILE': '/etc/te-tengo/aws-config'}
-         | combine(backup_static_env if backup_object_storage_auth == 'static' else {})
+         | combine(backup_s3_static_env if backup_object_storage_auth == 'static' else {}) }}
+    backup_env: >-
+      {{ (backup_azure_full_env if backup_target == 'azure' else (backup_s3_full_env if backup_target == 's3' else {}))
          | combine(backup_aws_env) }}
   no_log: true
 

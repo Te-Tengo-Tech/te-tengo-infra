@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (git-ignored). Run once: terraform init && terraform apply (local state).
+subscription_id = "00000000-0000-0000-0000-000000000000"
+location        = "chilecentral"
+# Global name: change it if Azure says it is taken.
+storage_account_name          = "tetengotfstate"
+resource_group_name           = "te-tengo-tfstate-rg"
+state_versions_retention_days = 90

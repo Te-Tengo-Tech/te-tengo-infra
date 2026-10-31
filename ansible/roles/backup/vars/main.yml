@@ -1,0 +1,6 @@
+---
+# Where the dumps go off the host: azure, s3 or none (local copies only).
+backup_target: >-
+  {{ ('azure' if backup_azure_endpoint | length > 0 else 'none') if backup_storage_provider == 'azure'
+     else ('s3' if backup_bucket | length > 0 else 'none') }}
+backup_azure_container_url: "{{ backup_azure_endpoint }}/{{ backup_azure_container }}"

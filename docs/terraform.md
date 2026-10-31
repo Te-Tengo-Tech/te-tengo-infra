@@ -1,33 +1,36 @@
 # Terraform
 
-The Te Tengo backend runs on **one VM** with PostgreSQL, the API, Caddy and MediaMTX in Docker Compose (set up by Ansible, see [interface-terraform-ansible.md](interface-terraform-ansible.md)). Production must cost as little as possible, so **only the VM comes from a cloud provider**:
+The Te Tengo backend runs on **one VM** with PostgreSQL, the API, Caddy and MediaMTX in Docker Compose (set up by Ansible, see [interface-terraform-ansible.md](interface-terraform-ansible.md)). Production must cost as little as possible: the VM and the object storage come from **Microsoft Azure**, the rest is free or hand-made:
 
 | Piece | Where | Managed by |
 |---|---|---|
 | VM, network, firewall, public IP | **Microsoft Azure**, Azure for Students subscription (US$ 100 credit): one `Standard_B2ats_v2` VM (`envs/azure`, **active**) | Terraform |
-| Clips, database dumps, Terraform state | **Cloudflare R2** (S3-compatible): three private buckets | By hand (below) |
+| Clips, movement files, profile photos, database dumps | **Azure Blob Storage**: one storage account (`tetengoproddata`, Standard_LRS, hot) with the private containers `clips`, `movements` and `backups`, reached by the VM's **managed identity** (no keys) | Terraform (`envs/azure`) |
+| Terraform state | **Azure Blob Storage**: a separate storage account (`tetengotfstate`, container `tfstate`), Microsoft Entra ID login | Terraform, once (`bootstrap-azure/`, local state; [below](#remote-state-on-azure)) |
+| Public downloads (app installers and `versiones/<canal>.json`, API `TT_VERSIONES_URL_BASE`) | **Cloudflare R2**, public `r2.dev` bucket written by the release workflows of the desktop and mobile repositories and read by the landing page | Outside this repository; **the remaining R2 dependency**, not part of the Azure Blob migration |
 | DNS | The registrar **Namify**: `api.tetengo.reqsai.tech` A record → VM IP | By hand (below) |
 | Landing page | Cloudflare Pages | Outside this repository |
 | Push | Firebase Cloud Messaging | Ansible (vault key) |
 | E-mail | Generic SMTP relay (API `TT_CORREO_PROVEEDOR=smtp`) | Ansible ([ansible.md](ansible.md)) |
 
-> **Status:** `envs/azure` is validated, linted and unit-tested with a mocked provider (`make tf-test`); it has **not been planned or applied** against the subscription yet. **Inactive alternatives**, kept in the repository and in CI: `envs/oci` (Oracle Cloud Always Free; dropped because no Ampere A1 capacity was available) and `envs/mvp` (AWS, verified only against the [Floci](https://github.com/floci-io/floci) emulator).
+> **Status:** the VM of `envs/azure` runs production since 2026-10-08. The storage account, the VM's managed identity and the azurerm state backend (2026-10-31) are validated, linted and unit-tested with a mocked provider (`make tf-test`) and the Ansible side is tested against Azurite (`make test-all`); they have **not been planned or applied** against the subscription yet: follow [Migrate from Cloudflare R2 to Azure Blob](deploy.md#migrate-from-cloudflare-r2-to-azure-blob). **Inactive alternatives**, kept in the repository and in CI: `envs/oci` (Oracle Cloud Always Free; dropped because no Ampere A1 capacity was available) and `envs/mvp` (AWS, verified only against the [Floci](https://github.com/floci-io/floci) emulator).
 
 ## Layout
 | Path | What it is |
 |---|---|
 | `modules/te-tengo-azure/` | Azure resources of the active environment (below). `tests/module.tftest.hcl`: offline `terraform test` with `mock_provider "azurerm"` |
-| `envs/azure/` | **Active.** Provider `hashicorp/azurerm` `~> 4.81` (lock file: 4.81.0); credentials from the Azure CLI (`az login`). State in Cloudflare R2 through the S3 backend (`backend.hcl.example`, key `envs/azure/terraform.tfstate`) or local (`backend_override.tf`); `terraform.tfvars.example` |
+| `envs/azure/` | **Active.** Provider `hashicorp/azurerm` `~> 4.81` (lock file: 4.81.0); credentials from the Azure CLI (`az login`), `storage_use_azuread = true`. State in the `tfstate` container of the state account through `backend "azurerm"` with `use_azuread_auth = true` (`backend.hcl.example`, key `envs/azure/terraform.tfstate`) or local (`backend_override.tf`); `terraform.tfvars.example` |
+| `bootstrap-azure/` | One-time root with **local state**: resource group `te-tengo-tfstate-rg`, the state storage account (shared keys off, blob versioning and 90-day soft delete on, `prevent_destroy`), container `tfstate` and the operator's Storage Blob Data Contributor role ([below](#remote-state-on-azure)) |
 | `modules/te-tengo-oci/`, `envs/oci/` | **Inactive OCI alternative**: one Ampere A1 VM on Always Free ([below](#oci-alternative-inactive)) |
 | `modules/te-tengo/`, `envs/mvp/` | **Inactive AWS alternative**, reduced by default to "VM only" (EC2, security group, IAM for SSM, GitHub OIDC deploy role); S3, SES, SNS and Route53 are optional ([below](#aws-alternative-inactive)) |
 | `envs/local/` | `modules/te-tengo` pointed at Floci, with every optional path switched on |
-| `bootstrap/` | S3 state bucket for `envs/mvp` only (AWS) |
+| `bootstrap/` | S3 state bucket for `envs/mvp` only (AWS, inactive) |
 | `.tflint.hcl`, `.checkov.yaml` | Linter (terraform, aws and azurerm rulesets) and security-scanner settings. Accepted checkov findings are skipped next to the resource with the reason |
 
 `hashicorp/azurerm` 5.x exists (5.9.0 on 2026-10-08); the environment pins the 4.x line on purpose (newest 4.x: 4.81.0). Moving to 5.x is a separate change with its own upgrade guide.
 
 ## Resources (`modules/te-tengo-azure`)
-Eight resources, all in one resource group (nine with the optional budget). No Bastion, NAT gateway, load balancer, Key Vault or storage account.
+Eighteen resources, all in one resource group (nineteen with the optional budget, seventeen without the operator's role): the network and the VM, and the storage account with its containers, lifecycle policy and role assignments. No Bastion, NAT gateway, load balancer, Key Vault or private endpoint.
 
 | Area | Resources | Notes |
 |---|---|---|
@@ -38,12 +41,19 @@ Eight resources, all in one resource group (nine with the optional budget). No B
 | Host | `azurerm_linux_virtual_machine`, `vm_size` **`Standard_B2ats_v2`** (2 vCPU AMD, 1 GiB) by default; image **Canonical `ubuntu-24_04-lts`**, SKU `server` (x64) or `server-arm64` when the size is Arm (a `p` in its feature letters, e.g. `Standard_B2pts_v2`), version `latest` at creation; admin user `ubuntu` with `ssh_public_key`, **password authentication disabled**; **Trusted Launch** (Secure Boot + vTPM); boot diagnostics in a **managed** storage account; cloud-init only installs `python3` (later changes ignored so they never replace the host) | OS disk: **Standard SSD (`StandardSSD_LRS`) 30 GB** by default, encrypted at rest by the platform; `os_disk_storage_account_type = "Premium_LRS"` + `os_disk_size_gb = 64` gives a **P6**. A precondition rejects Premium on a size without premium storage (no `s` in the feature letters) |
 | Memory profile | Output `memory_profile` from the size's memory: `tiny` (1 GiB: B2ats_v2, B2ts_v2, B2pts_v2, B1s), `small` (2 GiB), `medium` (4 GiB: **B2als_v2**, B2ls_v2), `large` (≥ 6 GiB); an unknown size needs `memory_profile` | [ansible.md](ansible.md#memory-profiles) |
 | Name | `app_hostname` (e.g. `api.tetengo.reqsai.tech`, A record by hand at Namify), else `<ip-with-dashes>.sslip.io` | Output `dns_record` prints the record to create |
+| Identity | **System-assigned managed identity** on the VM (`identity { type = "SystemAssigned" }`; adding it to the running VM is an in-place update) | The API container and the backup job get Microsoft Entra ID tokens for it from IMDS; nothing secret on the host |
+| Storage account | `azurerm_storage_account` **`tetengo<environment><storage_account_suffix>`** (`tetengoproddata`; names are global, 3–24 lower-case letters and digits, enforced by a precondition), StorageV2, **Standard_LRS**, hot tier, same group and region; **TLS 1.2** minimum, **HTTPS only**, **no public blob access**, **`shared_access_key_enabled = false`** (no account keys, no key-signed SAS: Entra ID and user delegation SAS only; `default_to_oauth_authentication`), no local users/SFTP, no cross-tenant replication, a SAS expiration policy of one day (`Log`); `prevent_destroy` | Public network access stays on: household agents and the app upload and read from the Internet through SAS URLs (checkov's network checks are skipped with that reason) |
+| Containers | `clips` (clips, clip landmarks and profile photos), `movements` (movement files), `backups` (dumps), **private**, created through the management plane (`storage_account_id`); `prevent_destroy` | API `TT_CLIPS_CONTENEDOR`, `TT_MOVIMIENTOS_CONTENEDOR`, `TT_FOTOS_CONTENEDOR` (= clips) |
+| Data protection | **No blob versioning and no blob soft delete, on purpose**: deleting a clip or a movement file (consent revoked, retention) must really delete it, the same reasoning as the S3 buckets of `modules/te-tengo/s3.tf`. **Container soft delete, 7 days**: an accidentally deleted container comes back; it keeps no deleted blobs | The dumps also stay on the VM (last 7) |
+| Lifecycle | `azurerm_storage_management_policy`: `backups/` blobs deleted **`backups_retention_days`** (30) days after their last change; `clips/` blobs only when **`clips_retention_days`** is set (default `null` = keep: **pending team decision**, API `TT_RETENCION_CLIPS`). No abort rule: the service discards uncommitted blocks of an interrupted upload after 7 days | Mirrors the S3 module's lifecycle |
+| CORS | One blob-service rule from **`storage_cors_allowed_origins`** (env default: the three origins of `TT_CORS_ORIGENES` in `ansible/prod.yml`): methods `GET`, `HEAD`, `PUT`, `OPTIONS`; headers `content-type`, `x-ms-blob-type`, `x-ms-version`, `x-ms-date`, `x-ms-client-request-id`; exposes `content-length`, `content-type`, `content-range`, `etag`, `last-modified`, `x-ms-request-id`; max age 1 h. Empty list = no rule | The PWA uploads profile photos with `PUT` (headers `x-ms-blob-type: BlockBlob` and `Content-Type` from the API) and plays clips and photos with `GET`; the agent and the native app send no `Origin` |
+| Roles | VM identity: **Storage Blob Data Contributor** on each container (container scope) and **Storage Blob Delegator** on the account (Get User Delegation Key only works at account scope; no data access by itself). Operator (`az login` identity, `grant_operator_storage_access`, default `true`): Storage Blob Data Contributor on the account | The backup job needs write and read (`te-tengo-restore`); the role also allows deleting dumps, accepted (the lifecycle rule is what deletes them, the last 7 stay on the VM) |
 | Budget (optional) | `azurerm_consumption_budget_subscription`, US$ 5/month, e-mails at 80 % and 100 % of the actual cost, only when `budget_alert_email` is set | **Off by default**: Microsoft lists Azure for Students as an offer Cost Management does not support ([below](#cost-alerts)) |
 | Tags | `Project`, `Environment`, `ManagedBy`, `Repository` on every taggable resource | |
 
-Outputs: `public_ip`, `ssh_command`, `app_url`, `dns_record`, `live_view_*`, `memory_profile`, `instance_architecture`, `image`, `vm_size`, `location`, `resource_group_name`, `instance_id`, `budget_id` and `ansible_inventory` (same contract as the OCI module, `ansible_connection: ssh`, `cloud_provider: azure`; [interface-terraform-ansible.md](interface-terraform-ansible.md)).
+Outputs: `public_ip`, `ssh_command`, `app_url`, `dns_record`, `live_view_*`, `memory_profile`, `instance_architecture`, `image`, `vm_size`, `location`, `resource_group_name`, `instance_id`, `budget_id`, the storage outputs `storage_account_name`, `storage_account_id`, `storage_blob_endpoint` (`https://<account>.blob.core.windows.net`, no trailing slash), `clips_container_name`, `movements_container_name`, `backups_container_name`, `vm_principal_id`, and `ansible_inventory` (the OCI module's host contract, `ansible_connection: ssh`, `cloud_provider: azure`, with `object_storage_provider: azure`, `object_storage_auth: managed_identity` and the storage names instead of the S3 keys; [interface-terraform-ansible.md](interface-terraform-ansible.md)).
 
-The provider registers only `Microsoft.Compute` and `Microsoft.Network` (plus `Microsoft.Consumption` with a budget) instead of its default "core" set; on the subscription all of them were already registered on 2026-10-08.
+The provider registers only `Microsoft.Compute`, `Microsoft.Network` and `Microsoft.Storage` (plus `Microsoft.Consumption` with a budget) instead of its default "core" set; `Microsoft.Authorization` (role assignments) is registered on every subscription by Azure. Because the account has shared keys disabled, the provider runs with `storage_use_azuread = true`: any data-plane call it makes uses the operator's Entra ID login, which needs the operator's data role (created in the same apply; see the propagation note in the migration runbook).
 
 ### SSH open to anywhere (`admin_cidrs`)
 The operator connects through Cloudflare WARP and the deploy workflow runs on GitHub-hosted runners: neither has a fixed source address, so `admin_cidrs` defaults to `["0.0.0.0/0"]`. The protection is the authentication: the VM is created with `disable_password_authentication = true` and only the `ssh_public_key` (plus, after the first deploy, the restricted deploy key) can log in. Narrow `admin_cidrs` when the sources become known (a self-hosted runner, a fixed office IP); checkov's CKV_AZURE_10 is skipped in the module with this reason.
@@ -56,7 +66,7 @@ Facts read from the Azure for Students subscription itself; re-check them before
 | Allowed regions | An Azure Policy assignment, **"Allowed resource deployment regions"**, only accepts `canadacentral`, `chilecentral`, `northcentralus`, `westus` and `mexicocentral`. `envs/azure` validates `location` against this list; **`chilecentral`** (Santiago) is the default, the closest to Peru | Portal → *Policy* → *Assignments* → that assignment → *Parameters*. A deployment elsewhere fails with `RequestDisallowedByAzure` |
 | Sizes in `chilecentral` | Unrestricted small sizes: `Standard_B2ats_v2` (2 vCPU, 1 GiB, x64), `Standard_B2ts_v2` (1 GiB), `Standard_B2als_v2` (2 vCPU, 4 GiB), `Standard_B2ls_v2` (4 GiB). **No Arm sizes and no `B1s`/`B1ms`** there; in `mexicocentral`, `B2ats_v2` and `B2als_v2` return `NotAvailableForSubscription` | `az vm list-skus --location chilecentral --size Standard_B2 --all --output table` (the *Restrictions* column) |
 | Quotas in `chilecentral` | Total regional vCPUs **6**, Basv2 family **10** vCPUs, public IP addresses **3** | `az vm list-usage --location chilecentral --output table`, `az network list-usages --location chilecentral --output table` |
-| Resource providers | `Microsoft.Compute`, `Microsoft.Network`, `Microsoft.Consumption`, `Microsoft.CostManagement` registered | `az provider show --namespace Microsoft.Compute --query registrationState` |
+| Resource providers | `Microsoft.Compute`, `Microsoft.Network`, `Microsoft.Consumption`, `Microsoft.CostManagement` registered; `Microsoft.Storage` not checked yet (the provider registers it on the first apply) | `az provider show --namespace Microsoft.Storage --query registrationState` |
 
 So the default host is `Standard_B2ats_v2` (x64, image `server`), and the documented upgrade path is **`Standard_B2als_v2`** (2 vCPU, 4 GiB → memory profile `medium`), not `B1ms`. Arm stays supported by the module but is not the default.
 
@@ -73,7 +83,10 @@ Prices from the [Azure Retail Prices API](https://prices.azure.com/api/retail/pr
 | Virtual network, subnet, NSG, NIC | No charge | "Virtual Network in Azure is free of charge" ([Virtual Network pricing](https://azure.microsoft.com/en-us/pricing/details/virtual-network/)); the API has no meter for NSGs or NICs in `chilecentral` | 0 |
 | Boot diagnostics (managed storage) | Not billed | "the boot diagnostics data blobs … stored in the managed storage account are not currently billed" ([Azure boot diagnostics](https://learn.microsoft.com/en-us/azure/virtual-machines/boot-diagnostics)) | 0 |
 | Trusted Launch | No charge | "Trusted Launch doesn't increase existing VM pricing costs" ([Trusted Launch](https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch)) | 0 |
-| **Total, defaults** | | | **≈ 7.01 + disk operations** (VM inside the free hours); 16.65 + operations if the VM hours were billed |
+| Blob Storage, hot LRS (read on **2026-10-31**) | Data stored $0.02576/GB-month (first 50 TB); write operations $0.07 per 10,000; read operations $0.0056 per 10,000; list and create container $0.07 per 10,000; other operations $0.0056 per 10,000; no retrieval charge on hot | `serviceName eq 'Storage' and productName eq 'General Block Blob v2' and skuName eq 'Hot LRS'` | **≈ 0.27** for an assumed 5 GB of clips + 1.5 GB of dumps (0.17), 10,000 writes (0.07) and 50,000 reads (0.03); not measured |
+| Blob egress (clips and photos downloaded by the app) | Same outbound data meter as the VM: shared first 100 GB/month free, then $0.087/GB | row "Outbound data" above | **0** while VM and storage egress together stay below 100 GB/month |
+| Terraform state account | Same meters; a few MB and a few hundred operations a month | same filter | **< 0.01** |
+| **Total, defaults** | | | **≈ 7.3 + disk operations** (VM inside the free hours); 16.9 + operations if the VM hours were billed |
 
 **The student offer.** The [Azure for Students page](https://azure.microsoft.com/en-us/free/students) offers "$100 credit … within 12 months", "no credit card required", and, among the free monthly amounts for 12 months, Linux VMs: "750 hours each of B1s, B2pts v2 (Arm-based), and B2ats v2 (AMD-based) burstable VMs". 750 hours cover one VM running all month (a 31-day month has 744 hours). The page does not list managed disks or public IPs, so the disk and the IP are paid from the credit. Microsoft's [disabled-subscription page](https://learn.microsoft.com/en-us/azure/cost-management-billing/manage/azurestudents-subscription-disabled): "Any usage beyond the free services and quantities is deducted from your credit. Once your credit runs out, Azure disables your services and subscription"; the remaining credit and its use per service are on the [Azure Sponsorships balance page](https://www.microsoftazuresponsorships.com/balance). With the defaults, ≈ US$ 7/month plus disk operations is ≈ US$ 84 over 12 months: inside the credit, with little margin. Check the balance page after the first week, and again after the first month, to confirm that the VM hours are not charged.
 
@@ -90,6 +103,8 @@ curl -sG https://prices.azure.com/api/retail/prices --data-urlencode "api-versio
   --data-urlencode "\$filter=serviceName eq 'Virtual Machines' and armRegionName eq 'chilecentral' and armSkuName eq 'Standard_B2ats_v2' and priceType eq 'Consumption'" \
   | jq -r '.Items[] | [.productName, .meterName, .retailPrice, .unitOfMeasure] | @tsv'
 ```
+
+**Azure Blob versus Cloudflare R2, honestly.** R2 Standard had a free tier (10 GB-month, 1 million Class A and 10 million Class B operations a month) and **free egress** ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)); at Te Tengo's volume it cost US$ 0. Azure Blob charges every GB stored and every operation from the first one (cents a month at this volume, paid from the student credit) and, more importantly, **egress is not free**: clip and photo downloads share the subscription's first 100 GB/month of outbound data with the VM's live view and API traffic, and every GB beyond that costs $0.087. The move buys a single cloud, Entra ID instead of long-lived tokens in the vault, and managed identities; it does not save money. Watch the *Bandwidth* line of the balance page if clip playback grows. The Azure for Students page does not list Blob Storage among its free amounts, so none is assumed.
 
 **Stopping is not free.** Deallocating the VM (`az vm deallocate`) stops the compute meter only; the static public IP and the disk keep their monthly price until they are deleted. To stop paying, destroy the environment (teardown below).
 
@@ -111,25 +126,14 @@ Prerequisites: Terraform ≥ 1.10, the Azure CLI (`az`), Ansible core ≥ 2.18, 
    az vm list-skus --location chilecentral --size Standard_B2 --all --output table
    az vm list-usage --location chilecentral --output table
    ```
-3. **Cloudflare R2** (Dashboard → R2): create three **private** buckets (no public access, no custom domain): `te-tengo-clips`, `te-tengo-backups`, `te-tengo-tfstate`. Note the **Account ID** (R2 overview): the endpoint is `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. Then *Manage R2 API Tokens* → create tokens with permission **Object Read & Write**, each limited to one bucket ([R2 API tokens](https://developers.cloudflare.com/r2/api/tokens/)); R2 shows the Access Key ID and Secret Access Key **once**:
-   | Token | Bucket | Goes to |
-   |---|---|---|
-   | clips | `te-tengo-clips` | vault `vault_clips_s3_access_key_id` / `vault_clips_s3_secret_access_key` (the API signs pre-signed URLs) |
-   | backups | `te-tengo-backups` | vault `vault_backup_s3_access_key_id` / `vault_backup_s3_secret_access_key` (dump upload and restore) |
-   | tfstate | `te-tengo-tfstate` | operator's `~/.aws/credentials`, profile `[r2-tfstate]` (Terraform state only) |
-
-   One token with Object Read & Write on the three buckets also works; per-bucket tokens limit the damage of a leaked key. Optional: an object lifecycle rule on `te-tengo-backups` that deletes objects after 30 days ([R2 object lifecycles](https://developers.cloudflare.com/r2/buckets/object-lifecycles/)). If the buckets already exist from the OCI attempt, reuse them.
-4. **State backend.** R2 through Terraform's S3 backend ([Cloudflare: Remote R2 backend](https://developers.cloudflare.com/terraform/advanced-topics/remote-backend/)):
-   ```bash
-   cp envs/azure/backend.hcl.example envs/azure/backend.hcl   # set <ACCOUNT_ID>; bucket te-tengo-tfstate, key envs/azure/terraform.tfstate
-   ```
-   `backend.hcl` sets `region = "auto"`, `endpoints = { s3 = "https://<ACCOUNT_ID>.r2.cloudflarestorage.com" }`, `use_path_style = true` and `skip_credentials_validation`, `skip_metadata_api_check`, `skip_region_validation`, `skip_requesting_account_id`, `skip_s3_checksum` (R2 has no STS, IMDS, AWS region list or account id, and not every flexible checksum). Locking: `use_lockfile = true`, a conditional PUT with `If-None-Match`, which R2 lists as supported; no `encrypt`, because R2 does not implement `x-amz-server-side-encryption` and encrypts every object at rest itself ([R2 S3 API compatibility](https://developers.cloudflare.com/r2/api/s3/api/), [R2 data security](https://developers.cloudflare.com/r2/reference/data-security/)). The keys come from the `r2-tfstate` profile, never from the file. **Local state instead:** `printf 'terraform {\n  backend "local" {}\n}\n' > envs/azure/backend_override.tf` (git-ignored) and back up `envs/azure/terraform.tfstate` yourself.
-5. **Variables:** `cp envs/azure/terraform.tfvars.example envs/azure/terraform.tfvars` and fill in the [variables](#variables-of-envsazure): `subscription_id` (step 1), `location` (`chilecentral`), `ssh_public_key`, `app_hostname`, `object_storage_endpoint`. Keep `vm_size`, the disk and `admin_cidrs` at their defaults unless you mean to change the cost or the exposure.
+3. **Terraform state (once per subscription):** create the state account with `bootstrap-azure/` and write `envs/azure/backend.hcl` from its output ([Remote state on Azure](#remote-state-on-azure)). **Local state instead:** `printf 'terraform {\n  backend "local" {}\n}\n' > envs/azure/backend_override.tf` (git-ignored) and back up `envs/azure/terraform.tfstate` yourself.
+4. **Storage account name:** names are global across Azure. Check that `tetengoproddata` (or `tetengo<environment><storage_account_suffix>`) is free: `az storage account check-name --name tetengoproddata --query nameAvailable`; if not, set another `storage_account_suffix` **before** the first apply (changing it later replaces the account, which `prevent_destroy` blocks).
+5. **Variables:** `cp envs/azure/terraform.tfvars.example envs/azure/terraform.tfvars` and fill in the [variables](#variables-of-envsazure): `subscription_id` (step 1), `location` (`chilecentral`), `ssh_public_key`, `app_hostname`, `storage_account_suffix` (step 4) and `storage_cors_allowed_origins` (the PWA's origins). Keep `vm_size`, the disk and `admin_cidrs` at their defaults unless you mean to change the cost or the exposure.
 6. **Plan, review, apply:**
    ```bash
-   make azure-init && make azure-plan   # review: 8 to add, Standard_B2ats_v2, StandardSSD_LRS 30 GB, location chilecentral
+   make azure-init && make azure-plan   # review: 18 to add, Standard_B2ats_v2, StandardSSD_LRS 30 GB, the storage account, location chilecentral
    make azure-apply
-   terraform -chdir=envs/azure output public_ip dns_record ssh_command memory_profile
+   terraform -chdir=envs/azure output public_ip dns_record ssh_command memory_profile storage_blob_endpoint
    ```
    If the apply fails with `RequestDisallowedByAzure`, the region is outside the policy; with `SkuNotAvailable` or `NotAvailableForSubscription`, the size is restricted in that region (step 2).
 7. **DNS at Namify:** in the DNS panel of `reqsai.tech`, add an **A** record, host `api.tetengo`, value = output `public_ip`, TTL 300 (or the lowest Namify allows). Wait until `dig +short api.tetengo.reqsai.tech` returns the IP: Let's Encrypt needs it **before** the first deploy. The IP is static, so the record survives VM restarts and resizes.
@@ -142,7 +146,33 @@ Prerequisites: Terraform ≥ 1.10, the Azure CLI (`az`), Ansible core ≥ 2.18, 
 
 **Resize** (e.g. to `Standard_B2als_v2`): set `vm_size`, `make azure-plan` shows an in-place update (Azure stops and restarts the VM; the disk and the IP stay), `make azure-apply`, then `make inventory && make deploy`: the inventory's `memory_profile` changes to `medium` and Ansible re-sizes the swap file, the container limits and the JVM.
 
-**Teardown:** dump the database first (`make backup-now`, it lands in R2), then `terraform -chdir=envs/azure destroy`. The OS disk is deleted with the VM and the static IP is released; update or remove the A record at Namify.
+**Teardown:** dump the database first (`make backup-now`, it lands in the `backups` container) and copy what must survive out of the storage account (`azcopy copy 'https://<account>.blob.core.windows.net/backups' <dir> --recursive` after `azcopy login`). The storage account and its containers carry `prevent_destroy`, so a plain `terraform -chdir=envs/azure destroy` stops: remove those `lifecycle` lines on a branch on purpose, or `terraform state rm` the storage resources to keep the account and delete the rest. The OS disk is deleted with the VM and the static IP is released; update or remove the A record at Namify.
+
+## Remote state on Azure
+The state of `envs/azure` lives in the private container `tfstate` of a **separate** storage account (`tetengotfstate` in the resource group `te-tengo-tfstate-rg`), read and written with the operator's Microsoft Entra ID login (`backend "azurerm"`, `use_azuread_auth = true`): the account has shared key access disabled, so there is no access key or SAS anywhere. The backend locks the state with a blob lease. The account cannot be managed by the configuration whose state it holds, so **`bootstrap-azure/`** creates it once with **local** state: the resource group, the account (StorageV2, Standard_LRS, TLS 1.2, HTTPS only, no public access, **blob versioning on** and **90-day blob and container soft delete**, so a broken or deleted state can be recovered; the state holds no personal data), the container, a lifecycle rule that deletes state versions after 90 days, `prevent_destroy` on the account and the container, and **Storage Blob Data Contributor** on the account for whoever applies it.
+
+```bash
+az login && az account set --subscription <id>
+cp bootstrap-azure/terraform.tfvars.example bootstrap-azure/terraform.tfvars   # subscription_id; change storage_account_name if taken
+terraform -chdir=bootstrap-azure init
+terraform -chdir=bootstrap-azure plan -out=tfplan     # review: 5 to add
+terraform -chdir=bootstrap-azure apply tfplan
+terraform -chdir=bootstrap-azure output -raw backend_config > envs/azure/backend.hcl
+```
+Keep `bootstrap-azure/terraform.tfstate` in the team's password manager (it only describes five resources; losing it means importing them, not losing the state of production). Another operator needs the same data role on the state account: `az role assignment create --assignee <user> --role "Storage Blob Data Contributor" --scope $(terraform -chdir=bootstrap-azure output -raw storage_account_id)`. Role assignments take up to 10 minutes to apply: a `403 AuthorizationPermissionMismatch` right after the bootstrap goes away by waiting.
+
+**One-time move of the existing state from Cloudflare R2** (the state of the running VM, until now in the R2 bucket `te-tengo-tfstate` through the S3 backend). After the bootstrap above, from a clean checkout of this branch with `envs/azure/backend.hcl` holding the azurerm settings:
+```bash
+az login
+terraform -chdir=envs/azure init -migrate-state -backend-config=backend.hcl
+#   Terraform reads the current state with the old "s3" backend configuration saved in
+#   envs/azure/.terraform/terraform.tfstate (the R2 credentials of the [r2-tfstate] profile must still work)
+#   and asks "Do you want to copy existing state to the new backend?": answer yes.
+terraform -chdir=envs/azure state list | wc -l                     # the same resources as before (8 or 9)
+az storage blob list --auth-mode login --account-name tetengotfstate --container-name tfstate --query '[].name' -o tsv
+terraform -chdir=envs/azure plan                                   # only the storage changes of this release, nothing about the VM replaced
+```
+If `init` cannot read the old state (a fresh checkout without the `.terraform` directory), download it first (`aws s3 cp s3://te-tengo-tfstate/envs/azure/terraform.tfstate ./r2.tfstate --endpoint-url https://<ACCOUNT_ID>.r2.cloudflarestorage.com --profile r2-tfstate`), run `terraform -chdir=envs/azure init -reconfigure -backend-config=backend.hcl` and push it with `terraform -chdir=envs/azure state push ../../r2.tfstate` (then delete the local copy). **Keep the R2 bucket `te-tengo-tfstate` and its token** until a plan against the Azure backend has been verified; then delete the bucket's object and revoke the token ([deploy.md](deploy.md#migrate-from-cloudflare-r2-to-azure-blob), step 9). `envs/oci` and `envs/mvp` (inactive) keep their own S3 backends.
 
 ## Variables of `envs/azure`
 | Variable | Default | Notes |
@@ -157,9 +187,11 @@ Prerequisites: Terraform ≥ 1.10, the Azure CLI (`az`), Ansible core ≥ 2.18, 
 | `os_disk_storage_account_type` / `os_disk_size_gb` | `StandardSSD_LRS` / `30` | `Premium_LRS` / `64` = P6 |
 | `admin_cidrs` | `["0.0.0.0/0"]` | SSH sources; key-only authentication ([above](#ssh-open-to-anywhere-admin_cidrs)) |
 | `app_hostname` | `""` | `api.tetengo.reqsai.tech` in production |
-| `object_storage_endpoint` | — (required) | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` |
-| `object_storage_region` | `auto` | |
-| `clips_bucket_name` / `backups_bucket_name` | `te-tengo-clips` / `te-tengo-backups` | |
+| `storage_account_suffix` | `data` | Account `tetengo<environment><suffix>` = `tetengoproddata`; global name, 3–24 characters in all; changing it replaces the account (blocked by `prevent_destroy`) |
+| `storage_cors_allowed_origins` | the three origins of `TT_CORS_ORIGENES` | Browser origins of the PWA (`GET`, `HEAD`, `PUT`); `[]` = no CORS rule |
+| `backups_retention_days` | `30` | Dumps in the `backups` container |
+| `clips_retention_days` | `null` | Keep clips (pending team decision) |
+| `grant_operator_storage_access` | `true` | Storage Blob Data Contributor on the account for the `az login` identity |
 | `budget_alert_email` / `budget_amount` | `""` / `5` | Empty = no budget ([cost alerts](#cost-alerts)) |
 
 ## Checks without a cloud account
@@ -169,7 +201,7 @@ make tf-test              # terraform test of modules/te-tengo-azure (mock_provi
 make lint security        # tflint (terraform, aws, azurerm rulesets) and checkov (Docker)
 make local-test           # modules/te-tengo against Floci (AWS alternative)
 ```
-`make tf-test` runs 20 Azure runs and 6 OCI runs. The Azure ones check the default host (`Standard_B2ats_v2`, Canonical `ubuntu-24_04-lts` `server`, 30 GB Standard SSD, key-only SSH as `ubuntu`, Trusted Launch, managed boot diagnostics, Standard static IPv4), that the NSG holds exactly seven inbound allow rules with only 80/TCP, 443/TCP, 443/UDP, 8322/TCP and 8189/UDP+TCP open to the Internet (the WebRTC rules follow `live_view_webrtc_port`, which must be 1024–65535) and 22 to `admin_cidrs` (anywhere by default), the Arm image for an Arm size, the sslip.io fallback, the memory profiles per size (`tiny`, `small`, `medium`, `large`, unknown size), the P6 disk and its precondition, the optional budget (amount, 80 %/100 % notifications, default start date), the rendered inventory field by field and the input validations. They cannot prove that Azure accepts the requests (policy, quotas, image and size availability): that needs the first real plan.
+`make tf-test` runs 24 Azure runs and 6 OCI runs. The Azure ones check the default host (`Standard_B2ats_v2`, Canonical `ubuntu-24_04-lts` `server`, 30 GB Standard SSD, key-only SSH as `ubuntu`, Trusted Launch, managed boot diagnostics, Standard static IPv4), that the NSG holds exactly seven inbound allow rules with only 80/TCP, 443/TCP, 443/UDP, 8322/TCP and 8189/UDP+TCP open to the Internet (the WebRTC rules follow `live_view_webrtc_port`, which must be 1024–65535) and 22 to `admin_cidrs` (anywhere by default), the Arm image for an Arm size, the sslip.io fallback, the memory profiles per size (`tiny`, `small`, `medium`, `large`, unknown size), the P6 disk and its precondition, the optional budget (amount, 80 %/100 % notifications, default start date), the storage account (name, StorageV2/Standard_LRS/hot, TLS 1.2, HTTPS only, no public blobs, shared keys off, no versioning and no blob soft delete, 7-day container soft delete, exactly the private containers `clips`, `movements` and `backups`, the lifecycle rule of the dumps with and without `clips_retention_days`, the CORS rule only with origins), the VM's system-assigned identity and its roles (Storage Blob Data Contributor per container, Storage Blob Delegator on the account), the operator's role and its switch, the storage outputs, the name precondition, the rendered inventory field by field and the input validations. They cannot prove that Azure accepts the requests (policy, quotas, image and size availability): that needs the first real plan.
 
 CI (`.github/workflows/terraform.yml`) runs all of the above with **no cloud credentials**; nothing is planned or applied against Azure, OCI or AWS.
 
@@ -213,8 +245,8 @@ Prerequisites: Terraform ≥ 1.10, Ansible core ≥ 2.18, an OpenSSH key pair, a
 
 1. **OCI account (you create it yourself).** Sign up at Oracle Cloud Free Tier and pick the **home region** carefully: Always Free compute only exists there and it cannot be changed later (e.g. `sa-santiago-1`, Chile Central (Santiago), or `sa-saopaulo-1`, Brazil East (São Paulo), the closest to Peru). Card verification is part of the sign-up.
 2. **API signing key** ([Required Keys and OCIDs](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/apisigningkey.htm)): Console → profile menu → *My profile* → *API keys* → *Add API key* → *Generate API key pair* → download the private key → *Add*. Paste the configuration preview the console shows into `~/.oci/config` (profile `[DEFAULT]`) and point `key_file` at the downloaded key (`chmod 600`). It holds `user`, `fingerprint`, `tenancy`, `region` and `key_file` ([SDK and CLI configuration file](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/sdkconfig.htm)). Never commit it.
-3. **Cloudflare R2:** buckets and tokens as in the [Azure runbook](#runbook-first-apply-on-azure-operator), step 3 (shared by both environments).
-4. **State backend:** `cp envs/oci/backend.hcl.example envs/oci/backend.hcl` (same R2 settings as the Azure runbook, step 4, key `envs/oci/terraform.tfstate`); local state with `envs/oci/backend_override.tf`.
+3. **Cloudflare R2** (Dashboard → R2; the OCI alternative still uses R2): three **private** buckets `te-tengo-clips`, `te-tengo-backups`, `te-tengo-tfstate`; the endpoint is `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. *Manage R2 API Tokens* → tokens with **Object Read & Write**, each limited to one bucket ([R2 API tokens](https://developers.cloudflare.com/r2/api/tokens/)): clips → vault `vault_clips_s3_*`, backups → vault `vault_backup_s3_*`, tfstate → the operator's `~/.aws/credentials` profile `[r2-tfstate]`. Optional: a lifecycle rule that deletes backups after 30 days.
+4. **State backend:** `cp envs/oci/backend.hcl.example envs/oci/backend.hcl` (R2 through the S3 backend, key `envs/oci/terraform.tfstate`: `region = "auto"`, the R2 endpoint, path style, the `skip_*` settings and `use_lockfile`, as the example explains); local state with `envs/oci/backend_override.tf`.
 5. **Variables:** `cp envs/oci/terraform.tfvars.example envs/oci/terraform.tfvars` and fill in the [variables](#variables-of-envsoci): `region`, `tenancy_ocid`, `ssh_public_key`, `admin_cidrs` (your public IP as `/32`), `app_hostname`, `object_storage_endpoint`.
 6. **Plan, review, apply** (from your terminal; `oci-apply` refuses to run where `CI` or `GITHUB_ACTIONS` is set):
    ```bash
@@ -226,7 +258,7 @@ Prerequisites: Terraform ≥ 1.10, Ansible core ≥ 2.18, an OpenSSH key pair, a
 8. **First SSH, host key:** `ssh ubuntu@<public_ip>` from an address in `admin_cidrs`. Compare the fingerprint with the one cloud-init prints to the serial console (Console → instance → *Console connection* / *Console history*) before accepting it; then `ssh-keyscan -t ed25519 <public_ip>` gives the line for the deploy workflow's `SSH_KNOWN_HOSTS` in the GitHub environment `oci` ([deploy.md](deploy.md)).
 9. **Inventory and deploy:** `make inventory ENV_DIR=envs/oci` (writes `ansible/inventory/hosts.yml` from `envs/oci`), then [deploy.md](deploy.md). Images must be `linux/arm64`.
 
-**Teardown:** dump the database first (`make backup-now`, it lands in R2), then `terraform -chdir=envs/oci destroy`. The boot volume is deleted with the instance.
+**Teardown:** dump the database first (`make backup-now`, it lands in the R2 backups bucket), then `terraform -chdir=envs/oci destroy`. The boot volume is deleted with the instance.
 
 ### Variables of `envs/oci`
 | Variable | Default | Notes |

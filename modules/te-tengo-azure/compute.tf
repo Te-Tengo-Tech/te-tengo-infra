@@ -9,6 +9,13 @@ resource "azurerm_linux_virtual_machine" "app" {
 
   network_interface_ids = [azurerm_network_interface.app.id]
 
+  # System-assigned managed identity: the API container and the backup job reach the storage account with
+  # it through IMDS (storage.tf), so no storage key lives on the host. Adding it to a running VM is an
+  # in-place update.
+  identity {
+    type = "SystemAssigned"
+  }
+
   admin_username                  = var.admin_username
   disable_password_authentication = true
 

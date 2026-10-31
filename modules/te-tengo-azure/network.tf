@@ -77,8 +77,8 @@ locals {
 }
 
 # Stateful rules: replies to allowed traffic are let back in automatically. Outbound keeps the NSG
-# defaults (Internet allowed): image pulls, OS updates, Let's Encrypt, Cloudflare R2, the SMTP relay
-# and Firebase Cloud Messaging.
+# defaults (Internet allowed): image pulls, OS updates, Let's Encrypt, the storage account (public
+# endpoint), Microsoft Entra ID, the SMTP relay and Firebase Cloud Messaging.
 resource "azurerm_network_security_group" "app" {
   # checkov:skip=CKV_AZURE_10:SSH is open to admin_cidrs, 0.0.0.0/0 by default on purpose (operator behind Cloudflare WARP, GitHub-hosted deploy runners); password authentication is disabled on the VM.
   name                = "${local.name}-app"

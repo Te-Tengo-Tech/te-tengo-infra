@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # Smoke test of the deployed test host, from the Mac, through Caddy over HTTPS (make test-smoke).
-# Checks: health, HSTS, hidden endpoints, sign-up and sign-in, an agent's pre-signed clip URL on
-# Floci standing in for Cloudflare R2 (and the upload itself), HLS 401 without a token, RTSPS with
+# Checks: health, HSTS, hidden endpoints, sign-up and sign-in, an agent's SAS clip upload URL on
+# Azurite standing in for the Azure storage account (the upload itself with the returned headers, and the
+# blob in the clips container), HLS 401 without a token, RTSPS with
 # Caddy's certificate, live view end to end (an ffmpeg container publishes over RTSPS like the agent;
 # LL-HLS and WebRTC/WHEP are read through Caddy with the session's token: 201 with an SDP answer that
-# announces the ICE port over UDP and TCP, 401 without it or once the session is closed), the production-shaped settings (R2-style keys, no AWS credentials; the OCI image
-# firewall opened on OCI and left alone on Azure), and a backup to the bucket restored back. Prints a PASS/FAIL summary; exit code 1 on any failure.
+# # announces the ICE port over UDP and TCP, 401 without it or once the session is closed), the
+# production-shaped settings (Azure Blob Storage, no S3 settings, no AWS credentials; the OCI image
+# firewall opened on OCI and left alone on Azure), and a backup to the backups container restored back. Prints a PASS/FAIL summary; exit code 1 on any failure.
 set -uo pipefail
 cd "$(dirname "$0")"
 
 BASE="${TT_TEST_BASE:-https://localhost:18443}"
 RTSPS="${TT_TEST_RTSPS:-localhost:18322}"
-FLOCI_MAC="${TT_TEST_FLOCI_MAC:-127.0.0.1:34566}"
-FLOCI_HOST="floci.test:4566"
+# Azurite's account, key, addresses and SAS helper.
+# shellcheck source=test/azurite.sh
+. ./azurite.sh
 HOST=tt-test-host
 # Plays the household agent (publishes over RTSPS from outside the 1 GiB test host); same image as the
 # API's MediaMTX integration test.
@@ -99,15 +102,26 @@ check "POST /api/agente/eventos accepts a fall (202, alert created)" \
 
 r=$(call POST "/api/agente/eventos/$event_id/clip" '{"contentType":"video/mp4","tamanoBytes":16}' "$agent")
 upload_url=$(body "$r" | jq -r '.urlSubida // empty' 2>/dev/null)
-check "POST .../clip returns a pre-signed URL (201)" [ "$(code "$r")" = 201 -a -n "$upload_url" ]
+check "POST .../clip returns a SAS upload URL (201)" [ "$(code "$r")" = 201 -a -n "$upload_url" ]
 echo "      urlSubida: ${upload_url%%\?*}?…"
-check "The pre-signed URL points to the test Floci (http://$FLOCI_HOST/te-tengo-clips/)" \
-  [ "${upload_url#http://$FLOCI_HOST/te-tengo-clips/}" != "$upload_url" ]
+container_url="http://$AZURITE_HOST/$AZURITE_ACCOUNT/clips"
+check "The upload URL points to the clips container of the test storage account ($container_url/)" \
+  [ "${upload_url#"$container_url"/}" != "$upload_url" ]
+check "The upload URL carries a SAS (sv, sig)" bash -c 'grep -q "[?&]sv=" <<<"$1" && grep -q "[?&]sig=" <<<"$1"' _ "$upload_url"
+upload_headers=$(body "$r" | jq -r '.cabeceras // {} | to_entries[] | "\(.key): \(.value)"')
+# shellcheck disable=SC2016
+check "The upload instructions carry x-ms-blob-type: BlockBlob and the Content-Type" \
+  bash -c 'grep -qix "x-ms-blob-type: BlockBlob" <<<"$1" && grep -qix "content-type: video/mp4" <<<"$1"' _ "$upload_headers"
 headers=()
-while IFS= read -r h; do [ -n "$h" ] && headers+=(-H "$h"); done < <(body "$r" | jq -r '.cabeceras // {} | to_entries[] | "\(.key): \(.value)"')
-put_code=$(printf 'smoke-test-clip!' | curl -sS -o /dev/null -w '%{http_code}' --connect-to "$FLOCI_HOST:$FLOCI_MAC" \
+while IFS= read -r h; do [ -n "$h" ] && headers+=(-H "$h"); done <<<"$upload_headers"
+put_code=$(printf 'smoke-test-clip!' | curl -sS -o /dev/null -w '%{http_code}' --connect-to "$AZURITE_HOST:$AZURITE_MAC" \
   -X PUT ${headers[@]+"${headers[@]}"} --data-binary @- "$upload_url")
-check "The clip upload to the pre-signed URL is accepted by Floci (signature verified)" [ "$put_code" = 200 ]
+check "The clip upload with the returned URL and headers is accepted by Azurite (201, SAS verified)" [ "$put_code" = 201 ]
+blob_url="${upload_url%%\?*}"
+blob_props=$(curl -sS -o /dev/null -D - --connect-to "$AZURITE_HOST:$AZURITE_MAC" -I "$blob_url?$(azurite_sas rl)")
+# shellcheck disable=SC2016
+check "The clip is a 16-byte block blob in the clips container" \
+  bash -c 'grep -q "^HTTP/[0-9.]* 200" <<<"$1" && grep -qi "^content-length: 16" <<<"$1" && grep -qi "^x-ms-blob-type: BlockBlob" <<<"$1"' _ "$blob_props"
 
 # 5. Live view: HLS needs a viewer token; RTSPS serves Caddy's certificate.
 hls=$(curl -sS -L --cacert "$CA" -o /dev/null -w '%{http_code}' "$BASE/vivo/camaras/$(uuidgen | tr 'A-Z' 'a-z')/index.m3u8")
@@ -218,14 +232,21 @@ rtsps_subject=$(openssl s_client -connect "$RTSPS" -servername localhost -CAfile
   | openssl x509 -noout -ext subjectAltName 2>/dev/null | tr -d ' \n')
 check "RTSPS on 8322 presents Caddy's certificate for the host name" grep -q 'DNS:localhost' <<<"$rtsps_subject"
 
-# 6. Production-shaped configuration: R2-style object storage with static keys, no AWS credentials,
+# 6. Production-shaped configuration: Azure Blob Storage (Azurite's key instead of the managed identity), no
+#    S3 settings, no AWS credentials,
 #    and the OCI image firewall: opened by the base role on OCI, untouched on Azure (the NSG is the
 #    firewall there and Canonical's Azure image has no such policy).
 # The bash -c bodies below are single-quoted on purpose: the file contents arrive as $1.
 api_env=$(docker exec "$HOST" cat "$APP_DIR/api.env")
 # shellcheck disable=SC2016
-check "api.env signs clips with static keys on an S3-compatible endpoint (R2 style)" \
-  bash -c 'grep -q "^TT_CLIPS_ENDPOINT=.http://floci.test:4566" <<<"$1" && grep -q "^TT_CLIPS_PATH_STYLE=.true" <<<"$1" && grep -q "^TT_CLIPS_ACCESS_KEY=" <<<"$1"' _ "$api_env"
+check "api.env selects Azure Blob Storage with the account, its endpoint and the three containers" \
+  bash -c 'grep -qx "TT_ALMACENAMIENTO_PROVEEDOR=.azure." <<<"$1" && grep -q "^TT_AZURE_STORAGE_ENDPOINT=.http://$2/$3." <<<"$1" &&
+    grep -qx "TT_AZURE_STORAGE_CUENTA=.$3." <<<"$1" && grep -qx "TT_CLIPS_CONTENEDOR=.clips." <<<"$1" &&
+    grep -qx "TT_MOVIMIENTOS_CONTENEDOR=.movements." <<<"$1" && grep -qx "TT_FOTOS_CONTENEDOR=.clips." <<<"$1"' \
+  _ "$api_env" "$AZURITE_HOST" "$AZURITE_ACCOUNT"
+# shellcheck disable=SC2016
+check "api.env has the account key only because the test uses Azurite (static), and no S3 settings" \
+  bash -c 'grep -q "^TT_AZURE_STORAGE_CLAVE=" <<<"$1" && ! grep -q "^TT_CLIPS_\(BUCKET\|ENDPOINT\|ACCESS_KEY\|SECRET_KEY\)=" <<<"$1"' _ "$api_env"
 # shellcheck disable=SC2016
 check "api.env holds no AWS credentials" bash -c '! grep -q "^AWS_" <<<"$1"' _ "$api_env"
 rules=$(docker exec "$HOST" cat /etc/iptables/rules.v4)
@@ -243,17 +264,20 @@ else
     done' _ "$rules"
 fi
 
-# 7. Backup to the bucket (Floci as R2) and restore.
+# 7. Backup to the backups container (Azurite as the storage account, azcopy) and restore.
 if [ "$RUN_BACKUP" = 1 ]; then
   check "te-tengo-backup.timer is scheduled" docker exec "$HOST" systemctl is-enabled --quiet te-tengo-backup.timer
   docker exec "$HOST" systemctl start te-tengo-backup.service
   check "te-tengo-backup.service dumps PostgreSQL" [ $? -eq 0 ]
-  listing=$(docker exec "$HOST" sh -c 'set -a; . /etc/te-tengo/backup.env; aws s3 ls s3://te-tengo-backups/postgres/ --endpoint-url http://floci.test:4566' 2>&1)
-  check "The dump is in s3://te-tengo-backups/postgres/ (Floci as R2, static keys)" grep -q 'te-tengo-.*\.dump' <<<"$listing"
+  check "azcopy is installed from Microsoft's apt repository" docker exec "$HOST" sh -c 'dpkg-query -W -f "\${Status}" azcopy | grep -q "install ok installed"'
+  listing=$(docker exec "$HOST" /usr/local/sbin/te-tengo-restore list 2>&1)
+  check "The dump is in the backups container under postgres/ (te-tengo-restore list)" grep -q '^postgres/te-tengo-.*\.dump$' <<<"$listing"
+  remote=$(curl -sS --connect-to "$AZURITE_HOST:$AZURITE_MAC" "http://$AZURITE_HOST/$AZURITE_ACCOUNT/backups?restype=container&comp=list&prefix=postgres/&$(azurite_sas rl)")
+  check "Azurite lists the dump in the backups container (seen from outside the host)" grep -q '<Name>postgres/te-tengo-[0-9TZ]*\.dump</Name>' <<<"$remote"
 
   psql_host </dev/null -c "delete from instalaciones where hogar_id = '$household'" >/dev/null
   docker exec "$HOST" /usr/local/sbin/te-tengo-restore latest >/dev/null 2>&1
-  check "te-tengo-restore latest restores the dump from the bucket" [ $? -eq 0 ]
+  check "te-tengo-restore latest restores the newest dump from the backups container" [ $? -eq 0 ]
   for _ in $(seq 1 60); do
     [ "$(curl -s --cacert "$CA" "$BASE/actuator/health" | jq -r .status 2>/dev/null)" = UP ] && break
     sleep 3
