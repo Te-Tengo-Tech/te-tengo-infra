@@ -2,11 +2,13 @@
 # Prepares the local test after `docker compose up`: a throwaway SSH key authorized for `ubuntu` on the
 # test host and its host key pinned in test/.work/known_hosts (what Terraform's ssh_public_key and the
 # operator's first verified connection do for the real VM), throwaway secrets (test/.work/vault.yml,
-# never real ones) and the two buckets, created in Floci as they are created by hand in Cloudflare R2.
+# never real ones) and the three containers, created in Azurite as Terraform creates them in the storage
+# account (modules/te-tengo-azure/storage.tf).
 set -euo pipefail
 cd "$(dirname "$0")"
+# shellcheck source=test/azurite.sh
+. ./azurite.sh
 
-FLOCI="${TT_TEST_FLOCI:-http://127.0.0.1:34566}"
 HOST=tt-test-host
 SSH_PORT="${TT_TEST_SSH_PORT:-18022}"
 WORK=.work
@@ -37,11 +39,8 @@ if [ ! -s "$WORK/vault.yml" ]; then
     echo "vault_mediamtx_auth_secret: \"$(openssl rand -hex 32)\""
     echo "vault_fcm_credentials_json: \"\""
     echo "vault_registry_password: \"\""
-    echo "# Floci's built-in keys stand in for the R2 API tokens (Floci verifies the signatures)."
-    echo "vault_clips_s3_access_key_id: test"
-    echo "vault_clips_s3_secret_access_key: test"
-    echo "vault_backup_s3_access_key_id: test"
-    echo "vault_backup_s3_secret_access_key: test"
+    echo "# Azurite's published development key (object_storage_auth: static); production has no key."
+    echo "vault_azure_storage_account_key: \"$AZURITE_KEY\""
     echo "vault_smtp_username: \"\""
     echo "vault_smtp_password: \"\""
     echo "vault_jwt_private_key_pem: |"
@@ -53,13 +52,13 @@ if [ ! -s "$WORK/vault.yml" ]; then
   echo "Wrote throwaway secrets to test/$WORK/vault.yml"
 fi
 
-# Buckets (signed with Floci's built-in test/test keys; Floci verifies signatures). In production they
-# are created by hand in Cloudflare R2 (docs/terraform.md).
-for bucket in te-tengo-clips te-tengo-backups; do
-  code=$(curl -sS -o /dev/null -w '%{http_code}' --aws-sigv4 "aws:amz:us-east-1:s3" --user test:test \
-    -X PUT "$FLOCI/$bucket")
+# Containers (an account SAS signed with Azurite's key; Azurite verifies it). In production Terraform
+# creates them (modules/te-tengo-azure/storage.tf).
+sas="$(azurite_sas rwdlac)"
+for container in clips movements backups; do
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X PUT "http://$AZURITE_MAC/$AZURITE_ACCOUNT/$container?restype=container&$sas")
   case "$code" in
-    200|409) echo "Bucket $bucket ready in Floci" ;;
-    *) echo "Could not create bucket $bucket in Floci (HTTP $code)" >&2; exit 1 ;;
+    201|409) echo "Container $container ready in Azurite" ;;
+    *) echo "Could not create container $container in Azurite (HTTP $code)" >&2; exit 1 ;;
   esac
 done

@@ -1,5 +1,5 @@
 # Copy to terraform.tfvars (git-ignored) and fill in. Never put secrets here: Azure credentials come from
-# `az login`, the R2 keys live in the Ansible vault and in ~/.aws/credentials (state backend).
+# `az login`; the API and the backup job reach storage with the VM's managed identity (no keys).
 
 # `az account show --query id -o tsv` (the Azure for Students subscription).
 subscription_id = "00000000-0000-0000-0000-000000000000"
@@ -24,11 +24,17 @@ os_disk_size_gb              = 30
 # A record at Namify: api.tetengo.reqsai.tech -> output public_ip. Empty: <ip-with-dashes>.sslip.io.
 app_hostname = "api.tetengo.reqsai.tech"
 
-# Cloudflare R2 (Dashboard > R2 > Overview: Account ID). Buckets are created by hand (docs/terraform.md).
-object_storage_endpoint = "https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
-object_storage_region   = "auto"
-clips_bucket_name       = "te-tengo-clips"
-backups_bucket_name     = "te-tengo-backups"
+# Storage account tetengo<environment><suffix> (global name: change the suffix if it is taken).
+storage_account_suffix = "data"
+# Browser origins of the PWA (same list as TT_CORS_ORIGENES in ansible/prod.yml).
+storage_cors_allowed_origins = [
+  "https://app.tetengo.reqsai.tech",
+  "https://tetengo.reqsai.tech",
+  "https://te-tengo.pages.dev",
+]
+# Dumps expire after 30 days; clips are kept until the team decides a retention (null).
+backups_retention_days = 30
+clips_retention_days   = null
 
 # Optional monthly budget alert (Cost Management lists Azure for Students as unsupported; leave empty
 # unless the subscription is pay-as-you-go).

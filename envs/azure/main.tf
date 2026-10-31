@@ -1,6 +1,6 @@
 # ACTIVE environment: production on Microsoft Azure (Azure for Students subscription), one small Linux
-# VM. Object storage is Cloudflare R2 and DNS is managed by hand at the registrar, so the only cloud
-# resources are the network, the public IP and the VM. Runbook: docs/terraform.md and docs/deploy.md.
+# VM and one storage account (clips, movement files, database dumps) reached with the VM's managed
+# identity. DNS is managed by hand at the registrar. Runbook: docs/terraform.md and docs/deploy.md.
 module "te_tengo" {
   source = "../../modules/te-tengo-azure"
 
@@ -17,10 +17,11 @@ module "te_tengo" {
   admin_cidrs  = var.admin_cidrs
   app_hostname = var.app_hostname
 
-  object_storage_endpoint = var.object_storage_endpoint
-  object_storage_region   = var.object_storage_region
-  clips_bucket_name       = var.clips_bucket_name
-  backups_bucket_name     = var.backups_bucket_name
+  storage_account_suffix        = var.storage_account_suffix
+  storage_cors_allowed_origins  = var.storage_cors_allowed_origins
+  backups_retention_days        = var.backups_retention_days
+  clips_retention_days          = var.clips_retention_days
+  grant_operator_storage_access = var.grant_operator_storage_access
 
   budget_alert_email = var.budget_alert_email
   budget_amount      = var.budget_amount

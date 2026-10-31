@@ -78,23 +78,58 @@ output "budget_id" {
   value       = one(azurerm_consumption_budget_subscription.monthly[*].id)
 }
 
+output "storage_account_name" {
+  description = "Name of the storage account (API TT_AZURE_STORAGE_CUENTA)."
+  value       = azurerm_storage_account.this.name
+}
+
+output "storage_account_id" {
+  description = "Azure resource id of the storage account (scope of the role assignments)."
+  value       = azurerm_storage_account.this.id
+}
+
+output "storage_blob_endpoint" {
+  description = "Blob service endpoint, https://<account>.blob.core.windows.net (API TT_AZURE_STORAGE_ENDPOINT; also the host of the SAS URLs)."
+  value       = trimsuffix(azurerm_storage_account.this.primary_blob_endpoint, "/")
+}
+
+output "clips_container_name" {
+  description = "Private container of the clips, their landmarks and the profile photos (API TT_CLIPS_CONTENEDOR)."
+  value       = azurerm_storage_container.this["clips"].name
+}
+
+output "movements_container_name" {
+  description = "Private container of the movement files (API TT_MOVIMIENTOS_CONTENEDOR)."
+  value       = azurerm_storage_container.this["movements"].name
+}
+
+output "backups_container_name" {
+  description = "Private container of the database dumps (backup role)."
+  value       = azurerm_storage_container.this["backups"].name
+}
+
+output "vm_principal_id" {
+  description = "Object id of the VM's system-assigned managed identity (the role assignments' principal)."
+  value       = azurerm_linux_virtual_machine.app.identity[0].principal_id
+}
+
 output "ansible_inventory" {
   description = "Ansible inventory of the host; write it with `make inventory ENV_DIR=envs/azure`."
   value = templatefile("${path.module}/templates/inventory.yml.tftpl", {
-    host_alias                = local.name
-    ansible_host              = local.public_ip
-    ansible_user              = var.admin_username
-    app_hostname              = local.app_hostname
-    public_ip                 = local.public_ip
-    cloud_region              = var.location
-    memory_profile            = local.memory_profile
-    instance_architecture     = local.instance_architecture
-    object_storage_endpoint   = trimsuffix(var.object_storage_endpoint, "/")
-    object_storage_region     = var.object_storage_region
-    object_storage_path_style = var.object_storage_path_style
-    clips_s3_bucket           = var.clips_bucket_name
-    backup_s3_bucket          = var.backups_bucket_name
-    live_view_publish_port    = var.live_view_publish_port
-    live_view_webrtc_port     = var.live_view_webrtc_port
+    host_alias             = local.name
+    ansible_host           = local.public_ip
+    ansible_user           = var.admin_username
+    app_hostname           = local.app_hostname
+    public_ip              = local.public_ip
+    cloud_region           = var.location
+    memory_profile         = local.memory_profile
+    instance_architecture  = local.instance_architecture
+    azure_storage_endpoint = trimsuffix(azurerm_storage_account.this.primary_blob_endpoint, "/")
+    azure_storage_account  = azurerm_storage_account.this.name
+    clips_container        = azurerm_storage_container.this["clips"].name
+    movements_container    = azurerm_storage_container.this["movements"].name
+    backups_container      = azurerm_storage_container.this["backups"].name
+    live_view_publish_port = var.live_view_publish_port
+    live_view_webrtc_port  = var.live_view_webrtc_port
   })
 }

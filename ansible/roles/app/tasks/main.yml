@@ -15,10 +15,7 @@
       - app_registry_auth in ['none', 'login']
       - app_api_source != 'registry' or app_api_tag is match('^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$') or app_api_digest | length > 0
       - app_api_digest | length == 0 or app_api_digest is match('^sha256:[0-9a-f]{64}$')
-      - app_clips_bucket | length > 0
-      - app_object_storage_region | length > 0
-      - app_object_storage_auth in ['static', 'instance_role']
-      - app_object_storage_endpoint == '' or app_object_storage_endpoint is match('^https?://[A-Za-z0-9.-]+(:[0-9]+)?$')
+      - app_object_storage_provider in ['azure', 's3']
       - app_mail_provider in ['smtp', 'ses', 'registro']
       - app_mail_provider != 'ses' or (app_ses_sender | length > 0 and app_aws_region | length > 0)
       - app_mail_provider != 'smtp' or (app_smtp_sender | length > 0 and app_smtp_port | int > 0)
@@ -37,9 +34,8 @@
       - app_webrtc_allow_origins | length > 0
       - app_webrtc_allow_origins | select('search', '[,\\s]') | list | length == 0
     fail_msg: >-
-      Missing or invalid settings. From the Terraform inventory: app_hostname, clips_s3_bucket,
-      object_storage_region (or aws_region), object_storage_auth (static or instance_role),
-      object_storage_endpoint (an http(s) URL without a path, or empty for AWS), memory_profile (one of
+      Missing or invalid settings. From the Terraform inventory: app_hostname, object_storage_provider
+      (azure or s3), memory_profile (one of
       {{ app_memory_profiles.keys() | join(', ') }}), push_provider (fcm, sns or registro; sns needs
       sns_platform_application_arn and aws_region), live_view_publish_port and live_view_webrtc_port
       (1024-65535, not another public port), with public_ip or app_hostname for the WebRTC addresses
@@ -66,6 +62,55 @@
       e.g. openssl rand -hex 32) are required. See group_vars/te_tengo/vault.yml.example.
     quiet: true
 
+- name: Validate the Azure Blob Storage settings
+  ansible.builtin.assert:
+    that:
+      - app_object_storage_auth in ['managed_identity', 'static']
+      - app_azure_storage_endpoint is match('^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[a-z0-9]{3,24})?$')
+      # Production: Entra ID tokens and SAS only over HTTPS. Plain HTTP is for Azurite (static key).
+      - app_object_storage_auth != 'managed_identity' or app_azure_storage_endpoint is match('^https://')
+      - app_azure_storage_account == '' or app_azure_storage_account is match('^[a-z0-9]{3,24}$')
+      - app_object_storage_auth != 'static' or app_azure_storage_account | length > 0
+      - app_azure_containers | select('match', '^[a-z0-9](?!.*--)[a-z0-9-]{1,61}[a-z0-9]$') | list | length == app_azure_containers | length
+    fail_msg: >-
+      Invalid Azure Blob Storage settings (object_storage_provider azure). From the Terraform inventory:
+      object_storage_auth (managed_identity, or static for the Azurite test host), azure_storage_endpoint
+      (https://<account>.blob.core.windows.net; http://<host>:10000/devstoreaccount1 only with static),
+      azure_storage_account (3-24 lower-case letters and digits; required with static) and clips_container,
+      movements_container, backups_container (valid container names).
+    quiet: true
+  vars:
+    app_azure_containers:
+      - "{{ app_clips_container }}"
+      - "{{ app_movements_container }}"
+      - "{{ app_photos_container }}"
+  when: app_object_storage_provider == 'azure'
+
+- name: Validate the Azure storage account key
+  ansible.builtin.assert:
+    that:
+      - vault_azure_storage_account_key | default('') | length > 0
+      - vault_azure_storage_account_key | default('') is match('^[A-Za-z0-9+/]+={0,2}$')
+    fail_msg: >-
+      object_storage_auth is static (Azurite test host) but vault_azure_storage_account_key is empty or not
+      a base64 account key. Production uses managed_identity and needs no key.
+    quiet: true
+  when: app_object_storage_provider == 'azure' and app_object_storage_auth == 'static'
+
+- name: Validate the S3 settings
+  ansible.builtin.assert:
+    that:
+      - app_clips_bucket | length > 0
+      - app_object_storage_region | length > 0
+      - app_object_storage_auth in ['static', 'instance_role']
+      - app_object_storage_endpoint == '' or app_object_storage_endpoint is match('^https?://[A-Za-z0-9.-]+(:[0-9]+)?$')
+    fail_msg: >-
+      Invalid S3 settings (object_storage_provider s3). From the Terraform inventory: clips_s3_bucket,
+      object_storage_region (or aws_region), object_storage_auth (static or instance_role) and
+      object_storage_endpoint (an http(s) URL without a path, or empty for AWS).
+    quiet: true
+  when: app_object_storage_provider == 's3'
+
 - name: Validate the object storage keys
   ansible.builtin.assert:
     that:
@@ -75,7 +120,7 @@
       object_storage_auth is static (Cloudflare R2) but vault_clips_s3_access_key_id or
       vault_clips_s3_secret_access_key is empty (an R2 API token with Object Read & Write on the clips bucket).
     quiet: true
-  when: app_object_storage_auth == 'static'
+  when: app_object_storage_provider == 's3' and app_object_storage_auth == 'static'
 
 - name: Validate the SMTP credentials
   ansible.builtin.assert:

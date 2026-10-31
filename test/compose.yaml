@@ -3,10 +3,14 @@
 #          (Azure Standard_B2ats_v2 by default). Its ports 22/443/80/8322 are published on the Mac as
 #          18022/18443/18081/18322. Its memory is capped like the VM's (TT_TEST_HOST_MEM, 1g by default,
 #          plus swap up to TT_TEST_HOST_MEMSWAP from Docker's own VM): every nested container counts.
-# - floci: local AWS emulator. Its S3 API stands in for Cloudflare R2 (clips and backups, static keys,
-#          path style; region us-east-1, since Floci rejects R2's "auto"), reachable from the host and from the containers inside it as
-#          http://floci.test:4566, and from the Mac on 34566.
-# Ports avoid the ones the developer's own stacks use (8080, 4566, 5432, 8554, 8888, 9997, 443).
+# - azurite: Microsoft's Azure Storage emulator (blob service only). It stands in for the storage account
+#          Terraform creates: containers clips, movements and backups (created by test/prepare.sh), the
+#          well-known development account devstoreaccount1 and its published key (static auth; production
+#          uses the VM's managed identity, which Azurite cannot emulate). Fixed address 10.231.0.10, so the
+#          endpoint http://10.231.0.10:10000/devstoreaccount1 is "IP style" (account in the path) for the
+#          Azure SDK and azcopy, and the API, the backup job inside the host and the smoke test on the Mac
+#          (published on 31000) all use the same SAS URLs.
+# Ports avoid the ones the developer's own stacks use (8080, 4566, 5432, 8554, 8888, 9997, 443, 10000).
 name: tt-infra-test
 
 services:
@@ -35,32 +39,42 @@ services:
     networks:
       - test
 
-  floci:
-    image: floci/floci:2.2.0
-    container_name: tt-test-floci
-    environment:
-      # Verify request signatures (pre-signed URLs included), as Amazon S3 does.
-      FLOCI_AUTH_VALIDATE_SIGNATURES: "true"
-      FLOCI_SERVICES_ECS_RECONCILE_CONTAINERS_ON_STARTUP: "false"
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    container_name: tt-test-azurite
+    # --skipApiVersionCheck: the API's Azure SDK may send a newer x-ms-version than this Azurite knows.
+    command:
+      - azurite-blob
+      - --blobHost
+      - 0.0.0.0
+      - --blobPort
+      - "10000"
+      - --inMemoryPersistence
+      - --skipApiVersionCheck
+      - --disableProductStyleUrl
     ports:
-      - "127.0.0.1:34566:4566"
+      - "127.0.0.1:31000:10000"
     networks:
       test:
-        # A dotted name: the nested Docker DNS does not forward single-label names to the outer one.
-        aliases:
-          - floci.test
+        ipv4_address: 10.231.0.10
     healthcheck:
       test:
         - CMD
-        - bash
-        - -c
-        - 'exec 3<>/dev/tcp/127.0.0.1/4566 && printf "GET /_localstack/health HTTP/1.0\r\n\r\n" >&3 && read -r l <&3 && [[ $$l == *200* ]]'
+        - node
+        - -e
+        - "require('http').get('http://127.0.0.1:10000/devstoreaccount1?comp=list', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"
       interval: 2s
       timeout: 2s
       retries: 30
 
 networks:
-  test: {}
+  test:
+    ipam:
+      config:
+        # Dynamic addresses (the host, the smoke test's publisher) come from the upper half; Azurite's fixed
+        # address is outside it.
+        - subnet: 10.231.0.0/24
+          ip_range: 10.231.0.128/25
 
 volumes:
   host-docker: {}

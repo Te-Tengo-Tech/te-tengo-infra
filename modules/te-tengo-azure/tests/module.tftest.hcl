@@ -1,6 +1,7 @@
 # Offline tests of the Azure module: the hashicorp/azurerm provider is mocked, so no subscription,
 # credentials or network are needed (`make tf-test`). They check the module's own logic: image and
-# architecture from the size, NSG rules, disk options, memory profile, the optional budget and the
+# architecture from the size, NSG rules, disk options, memory profile, the optional budget, the storage
+# account (hardening, containers, lifecycle, CORS, role assignments of the VM's managed identity) and the
 # rendered inventory.
 
 # The provider checks the format of the resource ids passed between resources even when mocked, so
@@ -46,6 +47,45 @@ mock_provider "azurerm" {
   mock_resource "azurerm_linux_virtual_machine" {
     defaults = {
       id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/te-tengo-prod-rg/providers/Microsoft.Compute/virtualMachines/te-tengo-prod"
+      identity = {
+        principal_id = "11111111-1111-1111-1111-111111111111"
+        tenant_id    = "22222222-2222-2222-2222-222222222222"
+      }
+    }
+  }
+
+  mock_resource "azurerm_storage_account" {
+    defaults = {
+      id                    = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/te-tengo-prod-rg/providers/Microsoft.Storage/storageAccounts/tetengoproddata"
+      primary_blob_endpoint = "https://tetengoproddata.blob.core.windows.net/"
+    }
+  }
+
+  # Every container gets the same mocked id; the role assignment scopes only need a well-formed one.
+  mock_resource "azurerm_storage_container" {
+    defaults = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/te-tengo-prod-rg/providers/Microsoft.Storage/storageAccounts/tetengoproddata/blobServices/default/containers/clips"
+    }
+  }
+
+  mock_resource "azurerm_storage_management_policy" {
+    defaults = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/te-tengo-prod-rg/providers/Microsoft.Storage/storageAccounts/tetengoproddata/managementPolicies/default"
+    }
+  }
+
+  mock_resource "azurerm_role_assignment" {
+    defaults = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/te-tengo-prod-rg/providers/Microsoft.Storage/storageAccounts/tetengoproddata/providers/Microsoft.Authorization/roleAssignments/33333333-3333-3333-3333-333333333333"
+    }
+  }
+
+  mock_data "azurerm_client_config" {
+    defaults = {
+      object_id       = "44444444-4444-4444-4444-444444444444"
+      tenant_id       = "22222222-2222-2222-2222-222222222222"
+      subscription_id = "00000000-0000-0000-0000-000000000000"
+      client_id       = "55555555-5555-5555-5555-555555555555"
     }
   }
 
@@ -63,12 +103,9 @@ mock_provider "azurerm" {
 }
 
 variables {
-  location                = "chilecentral"
-  ssh_public_key          = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDKOTofJNaBqkM4ZkD/bzKoT9rZ5KyoClpW+tUX3hW/V test"
-  app_hostname            = "api.tetengo.reqsai.tech"
-  object_storage_endpoint = "https://0123456789abcdef.r2.cloudflarestorage.com"
-  clips_bucket_name       = "te-tengo-clips"
-  backups_bucket_name     = "te-tengo-backups"
+  location       = "chilecentral"
+  ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDKOTofJNaBqkM4ZkD/bzKoT9rZ5KyoClpW+tUX3hW/V test"
+  app_hostname   = "api.tetengo.reqsai.tech"
 }
 
 run "free_size_defaults" {
@@ -202,12 +239,13 @@ run "inventory_shape" {
       cloud_region                 = "chilecentral"
       memory_profile               = "tiny"
       instance_architecture        = "amd64"
-      object_storage_endpoint      = "https://0123456789abcdef.r2.cloudflarestorage.com"
-      object_storage_region        = "auto"
-      object_storage_path_style    = true
-      object_storage_auth          = "static"
-      clips_s3_bucket              = "te-tengo-clips"
-      backup_s3_bucket             = "te-tengo-backups"
+      object_storage_provider      = "azure"
+      object_storage_auth          = "managed_identity"
+      azure_storage_endpoint       = "https://tetengoproddata.blob.core.windows.net"
+      azure_storage_account        = "tetengoproddata"
+      clips_container              = "clips"
+      movements_container          = "movements"
+      backups_container            = "backups"
       ses_sender                   = ""
       push_provider                = "fcm"
       sns_platform_application_arn = ""
@@ -408,14 +446,187 @@ run "rejects_reserved_admin_username" {
   expect_failures = [var.admin_username]
 }
 
-run "rejects_plain_http_endpoint" {
+run "storage_account_defaults" {
+  command = apply
+
+  assert {
+    condition = (
+      azurerm_storage_account.this.name == "tetengoproddata" &&
+      azurerm_storage_account.this.account_kind == "StorageV2" &&
+      azurerm_storage_account.this.account_tier == "Standard" &&
+      azurerm_storage_account.this.account_replication_type == "LRS" &&
+      azurerm_storage_account.this.access_tier == "Hot" &&
+      azurerm_storage_account.this.location == "chilecentral" &&
+      azurerm_storage_account.this.resource_group_name == "te-tengo-prod-rg"
+    )
+    error_message = "The storage account must be a hot StorageV2 Standard_LRS named tetengoproddata in the environment's group and region."
+  }
+
+  assert {
+    condition = (
+      azurerm_storage_account.this.min_tls_version == "TLS1_2" &&
+      azurerm_storage_account.this.https_traffic_only_enabled &&
+      !azurerm_storage_account.this.allow_nested_items_to_be_public &&
+      !azurerm_storage_account.this.shared_access_key_enabled &&
+      azurerm_storage_account.this.default_to_oauth_authentication &&
+      !azurerm_storage_account.this.local_user_enabled &&
+      !azurerm_storage_account.this.sftp_enabled &&
+      !azurerm_storage_account.this.cross_tenant_replication_enabled
+    )
+    error_message = "The storage account must be TLS 1.2+, HTTPS only, without public blobs, account keys, local users or SFTP."
+  }
+
+  # A deleted clip (consent revoked, retention) must really be deleted: no versions, no blob soft delete.
+  assert {
+    condition = (
+      !azurerm_storage_account.this.blob_properties[0].versioning_enabled &&
+      length(azurerm_storage_account.this.blob_properties[0].delete_retention_policy) == 0 &&
+      azurerm_storage_account.this.blob_properties[0].container_delete_retention_policy[0].days == 7
+    )
+    error_message = "Blob versioning and blob soft delete must be off; only container soft delete (7 days) is on."
+  }
+
+  assert {
+    condition     = length(azurerm_storage_account.this.blob_properties[0].cors_rule) == 0
+    error_message = "Without storage_cors_allowed_origins there must be no CORS rule."
+  }
+
+  assert {
+    condition = (
+      toset([for c in azurerm_storage_container.this : c.name]) == toset(["clips", "movements", "backups"]) &&
+      alltrue([for c in azurerm_storage_container.this : c.container_access_type == "private"])
+    )
+    error_message = "The account must hold exactly the private containers clips, movements and backups."
+  }
+
+  assert {
+    condition = (
+      length(azurerm_storage_management_policy.this.rule) == 1 &&
+      azurerm_storage_management_policy.this.rule[0].name == "expire-old-dumps" &&
+      azurerm_storage_management_policy.this.rule[0].filters[0].prefix_match == toset(["backups/"]) &&
+      azurerm_storage_management_policy.this.rule[0].actions[0].base_blob[0].delete_after_days_since_modification_greater_than == 30
+    )
+    error_message = "By default only the dumps expire, after 30 days; clips are kept (clips_retention_days null)."
+  }
+
+  assert {
+    condition     = azurerm_linux_virtual_machine.app.identity[0].type == "SystemAssigned"
+    error_message = "The VM must have a system-assigned managed identity."
+  }
+
+  assert {
+    condition = (
+      toset(keys(azurerm_role_assignment.vm_containers)) == toset(["clips", "movements", "backups"]) &&
+      alltrue([for a in azurerm_role_assignment.vm_containers : a.role_definition_name == "Storage Blob Data Contributor" && a.principal_id == "11111111-1111-1111-1111-111111111111" && a.principal_type == "ServicePrincipal"]) &&
+      azurerm_role_assignment.vm_containers["clips"].scope == azurerm_storage_container.this["clips"].id
+    )
+    error_message = "The VM identity must be Storage Blob Data Contributor on each container (container scope)."
+  }
+
+  assert {
+    condition = (
+      azurerm_role_assignment.vm_delegator.role_definition_name == "Storage Blob Delegator" &&
+      azurerm_role_assignment.vm_delegator.scope == azurerm_storage_account.this.id &&
+      azurerm_role_assignment.vm_delegator.principal_id == "11111111-1111-1111-1111-111111111111"
+    )
+    error_message = "The VM identity must be Storage Blob Delegator on the account (user delegation SAS)."
+  }
+
+  assert {
+    condition = (
+      length(azurerm_role_assignment.operator) == 1 &&
+      azurerm_role_assignment.operator[0].principal_id == "44444444-4444-4444-4444-444444444444" &&
+      azurerm_role_assignment.operator[0].role_definition_name == "Storage Blob Data Contributor" &&
+      azurerm_role_assignment.operator[0].scope == azurerm_storage_account.this.id
+    )
+    error_message = "The operator (current client) must be Storage Blob Data Contributor on the account by default."
+  }
+
+  assert {
+    condition = (
+      output.storage_account_name == "tetengoproddata" &&
+      output.storage_blob_endpoint == "https://tetengoproddata.blob.core.windows.net" &&
+      output.clips_container_name == "clips" &&
+      output.movements_container_name == "movements" &&
+      output.backups_container_name == "backups" &&
+      output.vm_principal_id == "11111111-1111-1111-1111-111111111111"
+    )
+    error_message = "The storage outputs are wrong (the endpoint has no trailing slash)."
+  }
+}
+
+run "storage_cors_and_retention" {
+  command = apply
+
+  variables {
+    storage_cors_allowed_origins  = ["https://app.tetengo.reqsai.tech", "https://te-tengo.pages.dev"]
+    clips_retention_days          = 90
+    backups_retention_days        = 14
+    grant_operator_storage_access = false
+    storage_account_suffix        = "st01"
+  }
+
+  assert {
+    condition = (
+      length(azurerm_storage_account.this.blob_properties[0].cors_rule) == 1 &&
+      azurerm_storage_account.this.blob_properties[0].cors_rule[0].allowed_origins == tolist(["https://app.tetengo.reqsai.tech", "https://te-tengo.pages.dev"]) &&
+      toset(azurerm_storage_account.this.blob_properties[0].cors_rule[0].allowed_methods) == toset(["GET", "HEAD", "PUT", "OPTIONS"]) &&
+      contains(azurerm_storage_account.this.blob_properties[0].cors_rule[0].allowed_headers, "x-ms-blob-type") &&
+      contains(azurerm_storage_account.this.blob_properties[0].cors_rule[0].allowed_headers, "content-type")
+    )
+    error_message = "The CORS rule must allow GET, HEAD, PUT and OPTIONS with content-type and x-ms-blob-type from the given origins."
+  }
+
+  assert {
+    condition = (
+      length(azurerm_storage_management_policy.this.rule) == 2 &&
+      one([for r in azurerm_storage_management_policy.this.rule : r.actions[0].base_blob[0].delete_after_days_since_modification_greater_than if r.name == "clips-retention"]) == 90 &&
+      one([for r in azurerm_storage_management_policy.this.rule : r.filters[0].prefix_match if r.name == "clips-retention"]) == toset(["clips/"]) &&
+      one([for r in azurerm_storage_management_policy.this.rule : r.actions[0].base_blob[0].delete_after_days_since_modification_greater_than if r.name == "expire-old-dumps"]) == 14
+    )
+    error_message = "clips_retention_days must add a clips-retention rule and backups_retention_days must set the dumps' rule."
+  }
+
+  assert {
+    condition     = length(azurerm_role_assignment.operator) == 0
+    error_message = "grant_operator_storage_access = false must not create the operator's role assignment."
+  }
+
+  assert {
+    condition     = azurerm_storage_account.this.name == "tetengoprodst01"
+    error_message = "storage_account_suffix must end the account name."
+  }
+}
+
+run "storage_account_name_too_long" {
   command = plan
 
   variables {
-    object_storage_endpoint = "http://example.com"
+    environment            = "production-chile"
+    storage_account_suffix = "abcdefghij"
   }
 
-  expect_failures = [var.object_storage_endpoint]
+  expect_failures = [azurerm_storage_account.this]
+}
+
+run "rejects_an_invalid_storage_suffix" {
+  command = plan
+
+  variables {
+    storage_account_suffix = "Data-1"
+  }
+
+  expect_failures = [var.storage_account_suffix]
+}
+
+run "rejects_a_cors_origin_with_a_path" {
+  command = plan
+
+  variables {
+    storage_cors_allowed_origins = ["https://app.tetengo.reqsai.tech/"]
+  }
+
+  expect_failures = [var.storage_cors_allowed_origins]
 }
 
 run "webrtc_port_follows_the_variable" {

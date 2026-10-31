@@ -25,9 +25,15 @@ vault_fcm_credentials_json: ""
 # Only with te_tengo_registry_auth: login (GitHub token with read:packages).
 vault_registry_password: ""
 
-# Cloudflare R2 (object_storage_auth: static in the inventory). Create the tokens in the Cloudflare
-# dashboard (R2 > Manage R2 API Tokens), permission "Object Read & Write", each scoped to one bucket;
-# R2 shows the Access Key ID and the Secret Access Key once. Unused with the AWS instance role.
+# Azure Blob Storage (production): NO secret. The API and the backup job use the VM's system-assigned
+# managed identity (object_storage_auth: managed_identity) and the storage account has shared key access
+# disabled. The account key below is only for object_storage_auth: static, i.e. the local test host with
+# Azurite (test/prepare.sh writes Azurite's published development key there).
+vault_azure_storage_account_key: ""
+
+# S3-compatible store (object_storage_provider: s3, the inactive OCI and AWS alternatives, with
+# object_storage_auth: static). Cloudflare R2 tokens (R2 > Manage R2 API Tokens, "Object Read & Write",
+# each scoped to one bucket). Unused on Azure and with the AWS instance role.
 # - clips token (te-tengo-clips): the API signs the pre-signed upload and playback URLs with it.
 vault_clips_s3_access_key_id: ""
 vault_clips_s3_secret_access_key: ""

@@ -1,6 +1,6 @@
 # Interface: Terraform → Ansible
 
-Terraform (`envs/azure` + `modules/te-tengo-azure`, active; `envs/oci` + `modules/te-tengo-oci` and `envs/mvp` + `modules/te-tengo`, inactive alternatives) creates the VM. Ansible (`ansible/`, `compose/`) configures the host and deploys the Compose stack. The only handoff between them is the **inventory** that Terraform renders; the three modules render the same contract. This page is the contract: if a name changes here, both sides change in the same pull request.
+Terraform (`envs/azure` + `modules/te-tengo-azure`, active; `envs/oci` + `modules/te-tengo-oci` and `envs/mvp` + `modules/te-tengo`, inactive alternatives) creates the VM. Ansible (`ansible/`, `compose/`) configures the host and deploys the Compose stack. The only handoff between them is the **inventory** that Terraform renders; the three modules render the same contract, except the object storage keys, which depend on `object_storage_provider` (Azure Blob Storage on Azure, an S3-compatible store on the inactive alternatives). This page is the contract: if a name changes here, both sides change in the same pull request.
 
 ## How the inventory is produced
 ```bash
@@ -27,19 +27,20 @@ all:
           cloud_region: 'chilecentral'
           memory_profile: 'tiny'
           instance_architecture: 'amd64'
-          object_storage_endpoint: 'https://<ACCOUNT_ID>.r2.cloudflarestorage.com'
-          object_storage_region: 'auto'
-          object_storage_path_style: true
-          object_storage_auth: static
-          clips_s3_bucket: 'te-tengo-clips'
-          backup_s3_bucket: 'te-tengo-backups'
+          object_storage_provider: azure
+          object_storage_auth: managed_identity
+          azure_storage_endpoint: 'https://tetengoproddata.blob.core.windows.net'
+          azure_storage_account: 'tetengoproddata'
+          clips_container: 'clips'
+          movements_container: 'movements'
+          backups_container: 'backups'
           ses_sender: ''
           push_provider: fcm
           sns_platform_application_arn: ''
           live_view_publish_port: 8322
           live_view_webrtc_port: 8189
 ```
-The OCI module renders the same keys with `cloud_provider: oci`, the OCI region, `ansible_user: ubuntu` and `memory_profile` from the A1 memory (`large` for 6 GB). The AWS module renders the same keys plus `aws_region`, with `ansible_host` = the instance id and an SSM `ProxyCommand` in `ansible_ssh_common_args`; with `enable_s3_buckets` it sets `object_storage_endpoint: ''`, `object_storage_region` = the AWS region, `object_storage_path_style: false` and `object_storage_auth: instance_role`.
+The OCI module renders the same host keys with `cloud_provider: oci`, the OCI region, `ansible_user: ubuntu`, `memory_profile` from the A1 memory (`large` for 6 GB) and, instead of the Azure storage keys, an S3-compatible store (no `object_storage_provider` key, so Ansible defaults to `s3`): `object_storage_endpoint: 'https://<ACCOUNT_ID>.r2.cloudflarestorage.com'`, `object_storage_region: 'auto'`, `object_storage_path_style: true`, `object_storage_auth: static`, `clips_s3_bucket`, `backup_s3_bucket`. The AWS module renders the OCI shape plus `aws_region`, with `ansible_host` = the instance id and an SSM `ProxyCommand` in `ansible_ssh_common_args`; with `enable_s3_buckets` it sets `object_storage_endpoint: ''`, `object_storage_region` = the AWS region, `object_storage_path_style: false` and `object_storage_auth: instance_role`.
 
 ## Variables
 | Variable | Type | Meaning | Used by Ansible for |
@@ -55,12 +56,18 @@ The OCI module renders the same keys with `cloud_provider: oci`, the OCI region,
 | `aws_region` | string | **aws only** | `TT_SES_REGION`, `TT_SNS_REGION` (only with SES/SNS) |
 | `memory_profile` | `tiny` \| `micro` \| `small` \| `medium` \| `large` | **azure:** from the memory of `vm_size` (`tiny` for the default 1 GiB `Standard_B2ats_v2`, `medium` for 4 GiB `Standard_B2als_v2`). **oci:** from `memory_in_gbs` (`large` for 6 GB). **aws:** `small` (≥ 2 GiB) or `micro`. Overridable with the module variable `memory_profile` | Selects swap size, container `mem_limit`s, JVM flags, PostgreSQL settings (`group_vars/te_tengo/memory.yml`) |
 | `instance_architecture` | `arm64` \| `amd64` | CPU of the VM (`amd64` for the default Azure size, `arm64` for A1, t4g and Azure Arm sizes) | Images must be `linux/<this>` |
-| `object_storage_endpoint` | string | S3 API endpoint of the object store: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`; empty = Amazon S3 | `TT_CLIPS_ENDPOINT` (also the host of the pre-signed URLs); `--endpoint-url` of the backup job |
-| `object_storage_region` | string | `auto` for R2, the AWS region for S3 | `TT_CLIPS_REGION`; `AWS_DEFAULT_REGION` of the backup job |
-| `object_storage_path_style` | bool | `true` for R2 (`endpoint/bucket/key`) | `TT_CLIPS_PATH_STYLE`; `addressing_style` of the backup job |
-| `object_storage_auth` | `static` \| `instance_role` | `static`: keys from the vault (`vault_clips_s3_*` for the API, `vault_backup_s3_*` for the backup job). `instance_role`: AWS SDK default chain (S3 buckets created by the AWS module) | `TT_CLIPS_ACCESS_KEY` / `TT_CLIPS_SECRET_KEY`; `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in `/etc/te-tengo/backup.env` |
-| `clips_s3_bucket` | string | Private bucket of the fall clips | `TT_CLIPS_BUCKET` |
-| `backup_s3_bucket` | string | Private bucket for `pg_dump` files | Upload target of the backup timer (`s3://<bucket>/postgres/<file>`) |
+| `object_storage_provider` | `azure` \| `s3` | **azure** (rendered by the Azure module): the storage account Terraform creates. **s3**: an S3-compatible store (R2, or Amazon S3 with the AWS module's `enable_s3_buckets`); not rendered by the OCI and AWS modules, Ansible's default for a non-Azure `cloud_provider` | `TT_ALMACENAMIENTO_PROVEEDOR`; which settings below the API and the backup job get |
+| `object_storage_auth` | `managed_identity` \| `static` \| `instance_role` | **azure:** `managed_identity` (the VM's system-assigned identity, no secret) or `static` (account key `vault_azure_storage_account_key`; the Azurite test host only). **s3:** `static` (keys from the vault: `vault_clips_s3_*` for the API, `vault_backup_s3_*` for the backup job) or `instance_role` (AWS SDK default chain) | azure: `TT_AZURE_STORAGE_CLAVE` only with `static`; azcopy `AZCOPY_AUTO_LOGIN_TYPE=MSI` or an account SAS. s3: `TT_CLIPS_ACCESS_KEY` / `TT_CLIPS_SECRET_KEY`; `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in `/etc/te-tengo/backup.env` |
+| `azure_storage_endpoint` | string | **azure only:** blob service endpoint, Terraform output `storage_blob_endpoint` (`https://<account>.blob.core.windows.net`, no trailing slash) | `TT_AZURE_STORAGE_ENDPOINT` (also the host of the SAS URLs agents and the app use); azcopy's container URL |
+| `azure_storage_account` | string | **azure only:** storage account name, output `storage_account_name` | `TT_AZURE_STORAGE_CUENTA` |
+| `clips_container` | string | **azure only:** `clips`, output `clips_container_name`: clips, clip landmarks and profile photos | `TT_CLIPS_CONTENEDOR` and `TT_FOTOS_CONTENEDOR` |
+| `movements_container` | string | **azure only:** `movements`, output `movements_container_name` | `TT_MOVIMIENTOS_CONTENEDOR` |
+| `backups_container` | string | **azure only:** `backups`, output `backups_container_name` | Upload target of the backup timer (`<endpoint>/backups/postgres/<file>`) |
+| `object_storage_endpoint` | string | **s3 only:** S3 API endpoint: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`; empty = Amazon S3 | `TT_CLIPS_ENDPOINT` (also the host of the pre-signed URLs); `--endpoint-url` of the backup job |
+| `object_storage_region` | string | **s3 only:** `auto` for R2, the AWS region for S3 | `TT_CLIPS_REGION`; `AWS_DEFAULT_REGION` of the backup job |
+| `object_storage_path_style` | bool | **s3 only:** `true` for R2 (`endpoint/bucket/key`) | `TT_CLIPS_PATH_STYLE`; `addressing_style` of the backup job |
+| `clips_s3_bucket` | string | **s3 only:** private bucket of the fall clips (and movement files under `movimientos/`) | `TT_CLIPS_BUCKET` |
+| `backup_s3_bucket` | string | **s3 only:** private bucket for `pg_dump` files | Upload target of the backup timer (`s3://<bucket>/postgres/<file>`) |
 | `ses_sender` | string | `Name <address>` of a verified SES identity; empty unless the AWS module has `enable_ses` | With `te_tengo_smtp_host` empty: `TT_CORREO_PROVEEDOR=ses` + `TT_SES_REMITENTE`; else ignored |
 | `push_provider` | `fcm` \| `sns` | `fcm` (Firebase directly); `sns` only with the AWS module's `enable_sns` | `TT_PUSH_PROVEEDOR`. With `fcm`, Ansible places the Firebase key (vault) and sets `TT_FCM_CREDENCIALES` |
 | `sns_platform_application_arn` | string | GCM platform application; empty unless `enable_sns` | `TT_SNS_ARN_ANDROID` and `TT_SNS_ARN_IOS` |
@@ -70,7 +77,8 @@ The OCI module renders the same keys with `cloud_provider: oci`, the OCI region,
 E-mail through the SMTP relay is **not** part of the inventory: it is not infrastructure Terraform creates. Its host, port, security and sender live in `group_vars/te_tengo/vars.yml` (`te_tengo_smtp_*`) and its credentials in the vault ([ansible.md](ansible.md)).
 
 ## Credentials on the host
-- **Azure (production) and OCI:** no cloud credentials at all (no managed identity on Azure). The API and the backup job hold R2 tokens from the Ansible vault (0600 files, `no_log`). The instance metadata service is not used by the stack.
+- **Azure (production):** no storage secret at all. The VM has a **system-assigned managed identity**; the API container (Azure SDK `DefaultAzureCredential`) and the backup job (azcopy, `AZCOPY_AUTO_LOGIN_TYPE=MSI`) get Microsoft Entra ID tokens for it from the instance metadata service (`169.254.169.254`, reachable from the Docker bridge network). Its roles, created by Terraform (`modules/te-tengo-azure/storage.tf`): **Storage Blob Data Contributor** on each of the `clips`, `movements` and `backups` containers (container scope: read, write, list and delete blobs; the backup job needs write and read for `te-tengo-restore`) and **Storage Blob Delegator** on the account (Get User Delegation Key, which Azure only accepts at account scope; it grants no data access by itself), so the API signs **user delegation SAS** valid at most 7 days. The account has shared key access disabled, so there are no account keys to leak. As with the AWS instance role, every container on the host could ask IMDS for the identity's token: only run trusted images. The operator gets Storage Blob Data Contributor on the account (`grant_operator_storage_access`) for `az`/azcopy with `--auth-mode login`.
+- **OCI (inactive):** no cloud credentials; the API and the backup job hold R2 tokens from the Ansible vault (0600 files, `no_log`).
 - **AWS alternative:** see below.
 
 ## AWS alternative: what the instance role allows
@@ -95,6 +103,7 @@ Terraform output `github_deploy_role_arn` → GitHub environment variable `AWS_D
 
 ## What Terraform does not do
 - No configuration beyond the minimum: on Azure and OCI cloud-init only installs `python3`; on AWS there is no user data. Docker, swap, the host firewall, Caddy, MediaMTX, PostgreSQL and the API are Ansible's job.
-- No R2 buckets, R2 tokens or DNS records: they are created by hand ([terraform.md](terraform.md#runbook-first-apply-on-azure-operator)).
-- No secrets: JWT keys, the Firebase key, the R2 tokens, the SMTP credentials, the MediaMTX authorization secret and database passwords live in Ansible Vault.
+- No DNS records: they are created by hand at Namify ([terraform.md](terraform.md#runbook-first-apply-on-azure-operator)). On the inactive OCI alternative the R2 buckets and tokens are hand-made too.
+- No Terraform state account: `bootstrap-azure/` creates it once with local state ([terraform.md](terraform.md#remote-state-on-azure)).
+- No secrets: JWT keys, the Firebase key, the SMTP credentials, the MediaMTX authorization secret and database passwords live in Ansible Vault (and the R2 tokens on the inactive OCI alternative). Azure storage needs none.
 - No `compose/` content.

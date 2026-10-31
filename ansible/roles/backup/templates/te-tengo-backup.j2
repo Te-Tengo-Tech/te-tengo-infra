@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-# Managed by Ansible (role backup). Dumps the Te Tengo database and copies it to the S3-compatible
-# backups bucket (Cloudflare R2 or Amazon S3; credentials in /etc/te-tengo/backup.env).
+# Managed by Ansible (role backup). Dumps the Te Tengo database, keeps the last {{ backup_keep_local }} dumps
+# on the host and copies each one off the host:
+{% if backup_target == 'azure' %}
+# the backups container of Azure Blob Storage, with azcopy (credentials in /etc/te-tengo/backup.env).
+{% elif backup_target == 's3' %}
+# the S3-compatible backups bucket (Cloudflare R2 or Amazon S3; credentials in /etc/te-tengo/backup.env).
+{% else %}
+# no off-host copy is configured (no storage endpoint or bucket).
+{% endif %}
 set -euo pipefail
 umask 077
 
@@ -17,7 +24,16 @@ echo "Wrote ${target} ($(du -h "${target}" | cut -f1))"
 
 find {{ backup_dir }} -maxdepth 1 -type f -name 'te-tengo-*.dump' -printf '%T@ %p\n' \
   | sort -rn | tail -n +{{ (backup_keep_local | int) + 1 }} | cut -d' ' -f2- | xargs -r rm -f --
-{% if backup_bucket | length > 0 %}
+{% if backup_target == 'azure' %}
+
+{% include 'azure-blob.sh.j2' %}
+
+key="{{ backup_prefix }}/$(basename "${target}")"
+blob_upload "${target}" "${key}"
+echo "Uploaded to ${container_url}/${key}"
+# azcopy writes a log and a job plan per command: keep a week of them.
+find {{ backup_azcopy_dir }} -mindepth 1 -maxdepth 1 -mtime +7 -exec rm -rf -- {} + 2>/dev/null || true
+{% elif backup_target == 's3' %}
 
 /usr/local/bin/aws s3 cp "${target}" "s3://{{ backup_bucket }}/{{ backup_s3_prefix }}/$(basename "${target}")" \
   --region {{ backup_aws_region }}{{ ' --endpoint-url ' ~ backup_s3_endpoint if backup_s3_endpoint | length > 0 else '' }} --only-show-errors

@@ -2,9 +2,10 @@
 # Local test inventory: the shape Terraform renders for the production VM (envs/azure,
 # docs/interface-terraform-ansible.md), pointing to the tt-test-host container over plain SSH. The
 # Makefile passes cloud_provider and memory_profile as extra vars (TEST_CLOUD, TEST_MEMORY_PROFILE), so
-# the OCI path can be tested too: make test-all TEST_CLOUD=oci TEST_MEMORY_PROFILE=small TEST_HOST_MEM=2g. Floci's
-# S3 plays Cloudflare R2: endpoint, path style and static keys from the vault. The only difference is the
-# signing region: R2 takes "auto", Floci rejects it ("expecting a region AWS publishes"), so us-east-1.
+# the OCI path can be tested too: make test-all TEST_CLOUD=oci TEST_MEMORY_PROFILE=small TEST_HOST_MEM=2g. Azurite
+# plays the storage account: the same containers, but the emulator's account devstoreaccount1 over HTTP
+# with its published key from the vault (object_storage_auth: static) instead of the VM's managed identity
+# over HTTPS (managed_identity, production).
 all:
   children:
     te_tengo:
@@ -23,12 +24,13 @@ all:
           cloud_region: local
           memory_profile: tiny  # make TEST_MEMORY_PROFILE=...
           instance_architecture: amd64
-          object_storage_endpoint: http://floci.test:4566
-          object_storage_region: us-east-1  # R2: auto
-          object_storage_path_style: true
-          object_storage_auth: static
-          clips_s3_bucket: te-tengo-clips
-          backup_s3_bucket: te-tengo-backups
+          object_storage_provider: azure
+          object_storage_auth: static  # production: managed_identity
+          azure_storage_endpoint: http://10.231.0.10:10000/devstoreaccount1  # https://<account>.blob.core.windows.net
+          azure_storage_account: devstoreaccount1
+          clips_container: clips
+          movements_container: movements
+          backups_container: backups
           ses_sender: ""
           push_provider: fcm  # overridden by test/vars.yml: registro, no Firebase key in the test
           sns_platform_application_arn: ""

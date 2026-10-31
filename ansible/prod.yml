@@ -18,6 +18,13 @@ te_tengo_api_tag: current
 # Let's Encrypt account e-mail (expiry notices).
 te_tengo_acme_email: jhosepmyrgutierrezsoto@gmail.com
 
+# Object storage: Azure Blob Storage with the VM's managed identity (no key in the vault). The account,
+# its endpoint and the containers come from the Terraform inventory (envs/azure); set here too so a deploy
+# with an inventory from before the migration (R2 keys) stops at the app role's checks instead of starting
+# the API without storage.
+te_tengo_object_storage_provider: azure
+te_tengo_object_storage_auth: managed_identity
+
 # Push through Firebase Cloud Messaging (the service-account key is in the vault).
 te_tengo_push_provider: fcm
 
@@ -42,11 +49,17 @@ te_tengo_api_settings:
   # US-43: GET /api/versiones reads the version of each app from the manifests the release workflows of
   # the desktop and mobile repositories write to the public downloads bucket (versiones/<canal>.json, the
   # repositories' DESCARGAS_BASE_URL; ADR 0012 of te-tengo-general-api). Set once: releases need no change
-  # here.
+  # here. This public bucket is still on Cloudflare R2 (r2.dev) and is NOT part of the Azure Blob
+  # migration: the release workflows of the other repositories and the landing page write and read it.
   TT_VERSIONES_URL_BASE: https://pub-c2d32ffba732437f83ff41fe77c0b9f1.r2.dev
   # Fallback only, while no manifest publishes Te Tengo Captura: GET /api/agente/configuracion and
   # GET /api/versiones use it (version alone, no download). Nothing needs to raise it any more.
   TT_AGENTE_VERSION_PUBLICADA: "0.4.1"
+  # US-35: version of the movements consent text the app shows and the API accepts. Version 3 names
+  # Microsoft Azure (Azure Blob Storage, Chile Central) as the cloud store; it goes out with the move from
+  # Cloudflare R2 (version 2) and must match te-tengo-mobile-flutter's versionTextoMovimientos. Consents
+  # given with version 2 keep their version and stay in force (the API asks nobody to consent again).
+  TT_MOVIMIENTOS_VERSION_TEXTO: "3"
 
 # Public half of the GitHub Actions deploy key (private half: secret DEPLOY_SSH_PRIVATE_KEY of the
 # `produccion` environment), installed for `ubuntu` by the base role (an operator run of
