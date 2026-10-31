@@ -74,27 +74,38 @@ variable "app_hostname" {
   default     = ""
 }
 
-variable "object_storage_endpoint" {
-  description = "Cloudflare R2 S3 endpoint: https://<ACCOUNT_ID>.r2.cloudflarestorage.com."
+variable "storage_account_suffix" {
+  description = "Suffix of the storage account name te-tengo<environment><suffix> without dashes (tetengoproddata). Storage account names are global: change it if the name is taken (before the first apply; changing it later replaces the account)."
   type        = string
+  default     = "data"
 }
 
-variable "object_storage_region" {
-  description = "Signing region of the object store ('auto' for R2)."
-  type        = string
-  default     = "auto"
+variable "storage_cors_allowed_origins" {
+  description = "Browser origins allowed to GET/HEAD/PUT blobs with SAS URLs (the PWA): the same list as TT_CORS_ORIGENES in ansible/prod.yml."
+  type        = list(string)
+  default = [
+    "https://app.tetengo.reqsai.tech",
+    "https://tetengo.reqsai.tech",
+    "https://te-tengo.pages.dev",
+  ]
 }
 
-variable "clips_bucket_name" {
-  description = "Private R2 bucket of the fall clips."
-  type        = string
-  default     = "te-tengo-clips"
+variable "backups_retention_days" {
+  description = "Days a dump is kept in the backups container."
+  type        = number
+  default     = 30
 }
 
-variable "backups_bucket_name" {
-  description = "Private R2 bucket of the database dumps."
-  type        = string
-  default     = "te-tengo-backups"
+variable "clips_retention_days" {
+  description = "Days a clip is kept in the clips container; null keeps them (pending team decision)."
+  type        = number
+  default     = null
+}
+
+variable "grant_operator_storage_access" {
+  description = "Give the `az login` identity that applies Storage Blob Data Contributor on the storage account (az/azcopy with Entra ID: data migration, manual restores)."
+  type        = bool
+  default     = true
 }
 
 variable "budget_alert_email" {

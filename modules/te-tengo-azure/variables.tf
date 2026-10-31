@@ -182,39 +182,57 @@ variable "app_hostname" {
 }
 
 # ----------------------------------------------------------------------------
-# Object storage (Cloudflare R2 or any S3-compatible store; not created here)
+# Object storage (Azure Blob Storage, storage.tf)
 # ----------------------------------------------------------------------------
 
-variable "object_storage_endpoint" {
-  description = "S3 API endpoint of the object store, e.g. https://<ACCOUNT_ID>.r2.cloudflarestorage.com for Cloudflare R2. Also the host of the clip pre-signed URLs."
+variable "storage_account_suffix" {
+  description = "Last part of the storage account name <project><environment><suffix> without dashes (e.g. tetengoproddata). Storage account names are global across Azure: change the suffix if the name is taken. The whole name must be 3-24 lower-case letters and digits. Changing it replaces the account (and deletes its blobs)."
   type        = string
+  default     = "data"
 
   validation {
-    condition     = can(regex("^https://[A-Za-z0-9.-]+(:[0-9]+)?/?$", var.object_storage_endpoint))
-    error_message = "object_storage_endpoint must be an https:// URL without a path."
+    condition     = can(regex("^[a-z0-9]{0,12}$", var.storage_account_suffix))
+    error_message = "storage_account_suffix must be at most 12 lower-case letters and digits."
   }
 }
 
-variable "object_storage_region" {
-  description = "Signing region of the object store ('auto' for Cloudflare R2)."
-  type        = string
-  default     = "auto"
+variable "storage_cors_allowed_origins" {
+  description = "Browser origins (scheme://host[:port]) allowed to GET, HEAD and PUT blobs through SAS URLs: the PWA uploads profile photos and plays clips from the browser. The same list as the API's TT_CORS_ORIGENES. Empty: no CORS rule (native clients need none)."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for origin in var.storage_cors_allowed_origins : can(regex("^(\\*|https?://[A-Za-z0-9.-]+(:[0-9]+)?)$", origin))])
+    error_message = "storage_cors_allowed_origins must hold origins such as https://app.example.com (no path, no trailing slash) or \"*\"."
+  }
 }
 
-variable "object_storage_path_style" {
-  description = "Path-style URLs (endpoint/bucket/key) for the clips and backups."
+variable "backups_retention_days" {
+  description = "Days a database dump is kept in the backups container before the lifecycle policy deletes it."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.backups_retention_days >= 1 && floor(var.backups_retention_days) == var.backups_retention_days
+    error_message = "backups_retention_days must be a whole number of days, 1 or more."
+  }
+}
+
+variable "clips_retention_days" {
+  description = "Days a clip is kept in the clips container before the lifecycle policy deletes it. Null (default) keeps them: pending team decision (the API's own TT_RETENCION_CLIPS deletes expired clips too)."
+  type        = number
+  default     = null
+
+  validation {
+    condition     = var.clips_retention_days == null || try(var.clips_retention_days >= 1 && floor(var.clips_retention_days) == var.clips_retention_days, false)
+    error_message = "clips_retention_days must be null or a whole number of days, 1 or more."
+  }
+}
+
+variable "grant_operator_storage_access" {
+  description = "Give the identity that runs Terraform (the operator's `az login`) Storage Blob Data Contributor on the storage account, for az/azcopy with Microsoft Entra ID (data migration, manual restores)."
   type        = bool
   default     = true
-}
-
-variable "clips_bucket_name" {
-  description = "Private bucket of the fall clips (API TT_CLIPS_BUCKET)."
-  type        = string
-}
-
-variable "backups_bucket_name" {
-  description = "Private bucket of the database dumps."
-  type        = string
 }
 
 # ----------------------------------------------------------------------------

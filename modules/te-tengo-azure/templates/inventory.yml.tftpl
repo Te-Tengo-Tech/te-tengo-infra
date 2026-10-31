@@ -14,12 +14,13 @@ all:
           cloud_region: '${replace(cloud_region, "'", "''")}'
           memory_profile: '${replace(memory_profile, "'", "''")}'
           instance_architecture: '${replace(instance_architecture, "'", "''")}'
-          object_storage_endpoint: '${replace(object_storage_endpoint, "'", "''")}'
-          object_storage_region: '${replace(object_storage_region, "'", "''")}'
-          object_storage_path_style: ${object_storage_path_style}
-          object_storage_auth: static
-          clips_s3_bucket: '${replace(clips_s3_bucket, "'", "''")}'
-          backup_s3_bucket: '${replace(backup_s3_bucket, "'", "''")}'
+          object_storage_provider: azure
+          object_storage_auth: managed_identity
+          azure_storage_endpoint: '${replace(azure_storage_endpoint, "'", "''")}'
+          azure_storage_account: '${replace(azure_storage_account, "'", "''")}'
+          clips_container: '${replace(clips_container, "'", "''")}'
+          movements_container: '${replace(movements_container, "'", "''")}'
+          backups_container: '${replace(backups_container, "'", "''")}'
           ses_sender: ''
           push_provider: fcm
           sns_platform_application_arn: ''
