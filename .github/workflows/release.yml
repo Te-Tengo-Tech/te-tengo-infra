@@ -153,7 +153,7 @@ jobs:
         run: |
           pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
           make galaxy
-      - name: Start the test host and Floci
+      - name: Start the test host and Azurite
         run: make test-host-up
       - name: Deploy with site.yml
         run: make test-deploy

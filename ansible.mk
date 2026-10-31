@@ -65,7 +65,7 @@ backup-now: ## Run the backup job on the host now
 
 # --- Local test host (no cloud account) ----------------------------------------
 
-test-host-up: ## Start the test host (Ubuntu 24.04 + systemd + SSH) and Floci, then SSH key, throwaway secrets and buckets
+test-host-up: ## Start the test host (Ubuntu 24.04 + systemd + SSH) and Azurite, then SSH key, throwaway secrets and containers
 	$(TEST_COMPOSE) up -d --build --wait
 	test/prepare.sh
 
@@ -75,7 +75,7 @@ test-image: ## Build the API image from TT_API_SRC (or pull TT_API_IMAGE_REF) an
 test-deploy: test-image ## Run the whole site.yml against the test host
 	$(TEST_PLAYBOOK) $(ANSIBLE_ARGS)
 
-test-smoke: ## Smoke test from the Mac through Caddy (HTTPS, sign-in, clips on Floci as R2, HLS 401, backup/restore)
+test-smoke: ## Smoke test from the Mac through Caddy (HTTPS, sign-in, clip SAS upload to Azurite, HLS 401, backup/restore with azcopy)
 	TT_TEST_CLOUD=$(TEST_CLOUD) TT_TEST_MEMORY_PROFILE=$(TEST_MEMORY_PROFILE) test/smoke.sh
 
 test-memory: ## Memory of the test host and of each container of the stack (after test-deploy)
@@ -84,7 +84,7 @@ test-memory: ## Memory of the test host and of each container of the stack (afte
 test-running-image: ## Check that the api container on the test host runs the configured image (after test-deploy)
 	cd $(ANSIBLE_DIR) && ANSIBLE_SSH_ARGS="$(TEST_SSH_ARGS)" ../.github/scripts/check-deployed-image.sh "" -i ../test/inventory.yml
 
-test-down: ## Remove the test host, Floci and their volumes
+test-down: ## Remove the test host, Azurite and their volumes
 	$(TEST_COMPOSE) down --volumes --remove-orphans
 	rm -rf test/.work
 
