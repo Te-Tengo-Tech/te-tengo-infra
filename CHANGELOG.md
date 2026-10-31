@@ -4,6 +4,8 @@ Format based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/); 
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-31
+
 Object storage moves from Cloudflare R2 to **Azure Blob Storage**, so the whole cloud side is Azure. Push stays on Firebase Cloud Messaging. The public downloads bucket on `r2.dev` (`TT_VERSIONES_URL_BASE`) is not part of this change and is the remaining R2 dependency.
 
 ### Added
