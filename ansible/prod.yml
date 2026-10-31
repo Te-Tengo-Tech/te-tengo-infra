@@ -55,6 +55,11 @@ te_tengo_api_settings:
   # Fallback only, while no manifest publishes Te Tengo Captura: GET /api/agente/configuracion and
   # GET /api/versiones use it (version alone, no download). Nothing needs to raise it any more.
   TT_AGENTE_VERSION_PUBLICADA: "0.4.1"
+  # US-35: version of the movements consent text the app shows and the API accepts. Version 3 names
+  # Microsoft Azure (Azure Blob Storage, Chile Central) as the cloud store; it goes out with the move from
+  # Cloudflare R2 (version 2) and must match te-tengo-mobile-flutter's versionTextoMovimientos. Consents
+  # given with version 2 keep their version and stay in force (the API asks nobody to consent again).
+  TT_MOVIMIENTOS_VERSION_TEXTO: "3"
 
 # Public half of the GitHub Actions deploy key (private half: secret DEPLOY_SSH_PRIVATE_KEY of the
 # `produccion` environment), installed for `ubuntu` by the base role (an operator run of
