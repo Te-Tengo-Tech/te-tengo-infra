@@ -58,13 +58,27 @@ app_api_env_core:
   SPRINGDOC_SWAGGER_UI_ENABLED: "false"
   TT_JWT_CLAVE_PUBLICA: "file:{{ app_secrets_mount }}/jwt-publica.pem"
   TT_JWT_CLAVE_PRIVADA: "file:{{ app_secrets_mount }}/jwt-privada.pem"
-  # Clips: Cloudflare R2 (endpoint, region auto, path style, static keys) or S3 with the instance role.
-  TT_CLIPS_BUCKET: "{{ app_clips_bucket }}"
-  TT_CLIPS_REGION: "{{ app_object_storage_region }}"
-  TT_CLIPS_ENDPOINT: "{{ app_object_storage_endpoint }}"
-  TT_CLIPS_PATH_STYLE: "{{ app_object_storage_path_style | bool | string | lower }}"
-  TT_CLIPS_ACCESS_KEY: "{{ vault_clips_s3_access_key_id | default('') if app_object_storage_auth == 'static' else '' }}"
-  TT_CLIPS_SECRET_KEY: "{{ vault_clips_s3_secret_access_key | default('') if app_object_storage_auth == 'static' else '' }}"
+  # Object storage of clips, landmarks, movement files and profile photos (empty values are not written).
+  TT_ALMACENAMIENTO_PROVEEDOR: "{{ app_object_storage_provider }}"
+  # - azure: Azure Blob Storage. Without TT_AZURE_STORAGE_CLAVE (managed_identity, production) the API uses
+  #   Microsoft Entra ID (DefaultAzureCredential: the VM's managed identity through IMDS) and user
+  #   delegation SAS; the key is only for Azurite.
+  TT_AZURE_STORAGE_ENDPOINT: "{{ app_azure_storage_endpoint if app_object_storage_provider == 'azure' else '' }}"
+  TT_AZURE_STORAGE_CUENTA: "{{ app_azure_storage_account if app_object_storage_provider == 'azure' else '' }}"
+  TT_AZURE_STORAGE_CLAVE: >-
+    {{ vault_azure_storage_account_key | default('') if (app_object_storage_provider == 'azure' and app_object_storage_auth == 'static') else '' }}
+  TT_CLIPS_CONTENEDOR: "{{ app_clips_container if app_object_storage_provider == 'azure' else '' }}"
+  TT_MOVIMIENTOS_CONTENEDOR: "{{ app_movements_container if app_object_storage_provider == 'azure' else '' }}"
+  TT_FOTOS_CONTENEDOR: "{{ app_photos_container if app_object_storage_provider == 'azure' else '' }}"
+  # - s3: Cloudflare R2 (endpoint, region auto, path style, static keys) or S3 with the instance role.
+  TT_CLIPS_BUCKET: "{{ app_clips_bucket if app_object_storage_provider == 's3' else '' }}"
+  TT_CLIPS_REGION: "{{ app_object_storage_region if app_object_storage_provider == 's3' else '' }}"
+  TT_CLIPS_ENDPOINT: "{{ app_object_storage_endpoint if app_object_storage_provider == 's3' else '' }}"
+  TT_CLIPS_PATH_STYLE: "{{ app_object_storage_path_style | bool | string | lower if app_object_storage_provider == 's3' else '' }}"
+  TT_CLIPS_ACCESS_KEY: >-
+    {{ vault_clips_s3_access_key_id | default('') if (app_object_storage_provider == 's3' and app_object_storage_auth == 'static') else '' }}
+  TT_CLIPS_SECRET_KEY: >-
+    {{ vault_clips_s3_secret_access_key | default('') if (app_object_storage_provider == 's3' and app_object_storage_auth == 'static') else '' }}
   # E-mail: smtp (production), ses (AWS alternative) or registro (logs only).
   TT_CORREO_PROVEEDOR: "{{ app_mail_provider }}"
   TT_SES_REMITENTE: "{{ app_ses_sender if app_mail_provider == 'ses' else '' }}"

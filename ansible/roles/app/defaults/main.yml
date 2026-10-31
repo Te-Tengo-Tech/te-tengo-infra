@@ -19,12 +19,23 @@ app_webrtc_additional_hosts: "{{ te_tengo_webrtc_additional_hosts | default([app
 app_webrtc_enabled: "{{ te_tengo_webrtc_enabled | default(true) }}"
 
 app_aws_region: "{{ te_tengo_aws_region | default('') }}"
+# Object storage (API TT_ALMACENAMIENTO_PROVEEDOR): azure (production) or s3 (R2 or Amazon S3).
+app_object_storage_provider: "{{ te_tengo_object_storage_provider | default('azure') | trim }}"
+# azure: managed_identity (no secret; DefaultAzureCredential reaches the VM's identity through IMDS) or
+#        static (TT_AZURE_STORAGE_CLAVE from vault_azure_storage_account_key; Azurite only).
+# s3:    static (TT_CLIPS_ACCESS_KEY / TT_CLIPS_SECRET_KEY from the vault, R2) or instance_role (AWS).
+app_object_storage_auth: >-
+  {{ (te_tengo_object_storage_auth | default('managed_identity' if app_object_storage_provider == 'azure' else 'instance_role')) | trim }}
+app_azure_storage_endpoint: "{{ te_tengo_azure_storage_endpoint | default('') | regex_replace('/+$', '') }}"
+app_azure_storage_account: "{{ te_tengo_azure_storage_account | default('') }}"
+app_clips_container: "{{ te_tengo_clips_container | default('clips') }}"
+app_movements_container: "{{ te_tengo_movements_container | default('movements') }}"
+# Profile photos share the clips container (API default of TT_FOTOS_CONTENEDOR).
+app_photos_container: "{{ te_tengo_photos_container | default(app_clips_container) }}"
 app_clips_bucket: "{{ te_tengo_clips_bucket | default('') }}"
 app_object_storage_endpoint: "{{ te_tengo_object_storage_endpoint | default('') }}"
 app_object_storage_region: "{{ te_tengo_object_storage_region | default('') }}"
 app_object_storage_path_style: "{{ te_tengo_object_storage_path_style | default(false) }}"
-# static: TT_CLIPS_ACCESS_KEY / TT_CLIPS_SECRET_KEY from the vault (R2). instance_role: SDK default chain (AWS).
-app_object_storage_auth: "{{ te_tengo_object_storage_auth | default('instance_role') }}"
 app_ses_sender: "{{ te_tengo_ses_sender | default('') }}"
 app_push_provider: "{{ te_tengo_push_provider | default('fcm') }}"
 app_mail_provider: "{{ te_tengo_mail_provider | default('registro') | trim }}"

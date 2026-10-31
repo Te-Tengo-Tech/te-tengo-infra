@@ -3,22 +3,41 @@
 
 # --- Terraform -> Ansible interface (docs/interface-terraform-ansible.md) ---------------------------
 # The Terraform-generated inventory (envs/azure, envs/oci or envs/mvp) sets app_hostname, cloud_provider,
-# memory_profile, object_storage_*, clips_s3_bucket, backup_s3_bucket, ses_sender, push_provider,
-# sns_platform_application_arn, live_view_publish_port and live_view_webrtc_port on the host (aws_region
-# only on AWS); public_ip is the default address WebRTC announces. The
+# memory_profile, object_storage_provider and object_storage_auth, the Azure storage names (envs/azure:
+# azure_storage_endpoint, azure_storage_account, clips_container, movements_container, backups_container) or
+# the S3 ones (envs/oci, envs/mvp: object_storage_endpoint/region/path_style, clips_s3_bucket,
+# backup_s3_bucket), ses_sender, push_provider, sns_platform_application_arn, live_view_publish_port and
+# live_view_webrtc_port on the host (aws_region only on AWS); public_ip is the default address WebRTC
+# announces. The
 # roles read them through these te_tengo_* names; a hand-written inventory may set the te_tengo_* names
 # directly instead (host variables win over these group defaults).
 te_tengo_hostname: "{{ app_hostname | default('') }}"
 te_tengo_cloud_provider: "{{ cloud_provider | default('aws') }}"
 te_tengo_aws_region: "{{ aws_region | default('') }}"
 te_tengo_memory_profile: "{{ memory_profile | default('small') }}"
-# Object storage of the clips and the dumps: Cloudflare R2 (endpoint, region 'auto', path style, static
-# keys from the vault) or Amazon S3 (no endpoint, the AWS region, the instance role).
+# Object storage of the clips, movement files, profile photos and dumps (API TT_ALMACENAMIENTO_PROVEEDOR):
+# - azure (default on cloud_provider azure, production): Azure Blob Storage, the account and containers
+#   Terraform creates (envs/azure).
+# - s3: an S3-compatible store, Cloudflare R2 or Amazon S3 (the inactive OCI and AWS alternatives).
+te_tengo_object_storage_provider: >-
+  {{ object_storage_provider | default('azure' if (cloud_provider | default('aws')) == 'azure' else 's3') }}
+# azure: managed_identity (default: the VM's system-assigned identity through IMDS, no secret) or static
+#        (vault_azure_storage_account_key; only for the Azurite test host).
+# s3:    static (vault_clips_s3_* and vault_backup_s3_* keys, R2) or instance_role (AWS SDK default chain).
+te_tengo_object_storage_auth: >-
+  {{ object_storage_auth | default('managed_identity' if te_tengo_object_storage_provider | trim == 'azure' else 'instance_role') }}
+# Azure Blob Storage: blob service endpoint (https://<account>.blob.core.windows.net; Azurite:
+# http://<host>:10000/devstoreaccount1, also the host of the SAS URLs), account name, containers.
+te_tengo_azure_storage_endpoint: "{{ azure_storage_endpoint | default('') }}"
+te_tengo_azure_storage_account: "{{ azure_storage_account | default('') }}"
+te_tengo_clips_container: "{{ clips_container | default('clips') }}"
+te_tengo_movements_container: "{{ movements_container | default('movements') }}"
+te_tengo_backups_container: "{{ backups_container | default('backups') }}"
+# S3-compatible store: Cloudflare R2 (endpoint, region 'auto', path style) or Amazon S3 (no endpoint, the
+# AWS region).
 te_tengo_object_storage_endpoint: "{{ object_storage_endpoint | default('') }}"
 te_tengo_object_storage_region: "{{ object_storage_region | default(aws_region | default('')) }}"
 te_tengo_object_storage_path_style: "{{ object_storage_path_style | default(false) }}"
-# static (vault_clips_s3_* and vault_backup_s3_* keys) or instance_role (AWS SDK default chain).
-te_tengo_object_storage_auth: "{{ object_storage_auth | default('instance_role') }}"
 te_tengo_clips_bucket: "{{ clips_s3_bucket | default('') }}"
 te_tengo_backups_bucket: "{{ backup_s3_bucket | default('') }}"
 te_tengo_ses_sender: "{{ ses_sender | default('') }}"
@@ -88,7 +107,7 @@ te_tengo_webrtc_allow_origins: "{{ te_tengo_hls_allow_origins }}"
 # Extra API settings merged last into api.env (e.g. TT_RETENCION_CLIPS, TT_AGENTE_VERSION_PUBLICADA).
 te_tengo_api_settings: {}
 
-# Daily PostgreSQL dump to te_tengo_backups_bucket (R2 or S3).
+# Daily PostgreSQL dump to the backups container (Azure) or te_tengo_backups_bucket (S3).
 te_tengo_backup_enabled: true
 te_tengo_backup_on_calendar: "*-*-* 08:30:00"  # 03:30 in Lima (UTC-5)
 te_tengo_backup_keep_local: 7

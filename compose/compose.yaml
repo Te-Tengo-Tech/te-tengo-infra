@@ -159,7 +159,8 @@ networks:
   # PostgreSQL only: no route out of the host.
   backend:
     internal: true
-  # Caddy, the API and MediaMTX; the API needs egress to R2 (or S3), the SMTP relay (or SES) and Firebase.
+  # Caddy, the API and MediaMTX; the API needs egress to Azure Blob Storage and IMDS (managed
+  # identity), the SMTP relay and Firebase.
   edge: {}
 
 volumes:

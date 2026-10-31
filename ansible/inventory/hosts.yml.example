@@ -20,12 +20,13 @@ all:
           cloud_region: chilecentral
           memory_profile: tiny
           instance_architecture: amd64
-          object_storage_endpoint: https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com
-          object_storage_region: auto
-          object_storage_path_style: true
-          object_storage_auth: static
-          clips_s3_bucket: te-tengo-clips
-          backup_s3_bucket: te-tengo-backups
+          object_storage_provider: azure
+          object_storage_auth: managed_identity
+          azure_storage_endpoint: https://tetengoproddata.blob.core.windows.net
+          azure_storage_account: tetengoproddata
+          clips_container: clips
+          movements_container: movements
+          backups_container: backups
           ses_sender: ""
           push_provider: fcm
           sns_platform_application_arn: ""

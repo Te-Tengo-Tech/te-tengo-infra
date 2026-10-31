@@ -4,16 +4,37 @@ backup_enabled: "{{ te_tengo_backup_enabled | default(true) }}"
 backup_dir: /var/backups/te-tengo
 backup_keep_local: "{{ te_tengo_backup_keep_local | default(7) }}"
 backup_on_calendar: "{{ te_tengo_backup_on_calendar | default('*-*-* 08:30:00') }}"
-# Off-host copy: a private bucket in an S3-compatible store, Cloudflare R2 in production (endpoint,
-# region auto, keys from the vault) or Amazon S3 (instance role). Empty keeps the dumps on the host only.
+# Off-host copy of every dump, under <prefix>/te-tengo-<UTC stamp>.dump:
+# - azure (production): the backups container of the storage account, through azcopy.
+# - s3: a private bucket in an S3-compatible store (Cloudflare R2 or Amazon S3), through the AWS CLI.
+# Empty endpoint (azure) or bucket (s3) keeps the dumps on the host only.
+backup_storage_provider: "{{ te_tengo_object_storage_provider | default('azure') | trim }}"
+backup_object_storage_auth: >-
+  {{ (te_tengo_object_storage_auth | default('managed_identity' if backup_storage_provider == 'azure' else 'instance_role')) | trim }}
+backup_prefix: postgres
+
+# --- Azure Blob Storage (azcopy from Microsoft's apt repository packages.microsoft.com) ---------------
+backup_azure_endpoint: "{{ te_tengo_azure_storage_endpoint | default('') | regex_replace('/+$', '') }}"
+backup_azure_account: "{{ te_tengo_azure_storage_account | default('') }}"
+backup_azure_container: "{{ te_tengo_backups_container | default('backups') }}"
+# managed_identity: azcopy signs in as the VM's system-assigned identity (AZCOPY_AUTO_LOGIN_TYPE=MSI).
+# static: the scripts mint a one-hour account SAS from this key (Azurite test host only).
+backup_azure_account_key: "{{ vault_azure_storage_account_key | default('') }}"
+# azcopy keeps its buffers and concurrency small on the 1 GiB VM (dumps are a few MB).
+backup_azcopy_buffer_gb: "0.1"
+backup_azcopy_concurrency: 4
+backup_azcopy_dir: /var/lib/te-tengo-azcopy
+backup_microsoft_repo_uri: >-
+  https://packages.microsoft.com/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_version'] }}/prod
+
+# --- S3-compatible store (inactive OCI and AWS alternatives) ------------------------------------------
 backup_bucket: "{{ te_tengo_backups_bucket | default('') }}"
-backup_s3_prefix: postgres
+backup_s3_prefix: "{{ backup_prefix }}"
 backup_s3_endpoint: "{{ te_tengo_object_storage_endpoint | default('') }}"
 backup_aws_region: "{{ te_tengo_object_storage_region | default('us-east-1', true) }}"
 # static: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from vault_backup_s3_* (an R2 token with Object Read &
 # Write on the backups bucket). instance_role: the AWS SDK default chain.
 backup_s3_path_style: "{{ te_tengo_object_storage_path_style | default(false) }}"
-backup_object_storage_auth: "{{ te_tengo_object_storage_auth | default('instance_role') }}"
 backup_access_key_id: "{{ vault_backup_s3_access_key_id | default('') }}"
 backup_secret_access_key: "{{ vault_backup_s3_secret_access_key | default('') }}"
 # Extra environment of the backup service, merged last.
