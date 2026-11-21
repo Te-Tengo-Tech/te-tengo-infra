@@ -40,7 +40,7 @@ services:
       - test
 
   azurite:
-    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    image: mcr.microsoft.com/azure-storage/azurite:3.38.0
     container_name: tt-test-azurite
     # --skipApiVersionCheck: the API's Azure SDK may send a newer x-ms-version than this Azurite knows.
     command:
